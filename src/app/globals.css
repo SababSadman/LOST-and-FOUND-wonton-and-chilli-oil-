@@ -1,55 +1,107 @@
 @import "tailwindcss";
 
-/* ─────────────────────────────────────────────
-   UIU Lost & Found Portal — Global Styles
-   Stack: Next.js · TypeScript · Tailwind · Framer Motion
-───────────────────────────────────────────── */
-
 :root {
-  /* Brand colours — adjust to match your HTML design */
-  --color-primary:   #1a56db;
-  --color-secondary: #7e3af2;
-  --color-accent:    #0ea5e9;
-
-  --background: #ffffff;
-  --foreground: #0f172a;
-
-  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), monospace;
+  --uiu-navy: #08263b;
+  --uiu-orange: #f35a12;
+  --uiu-paper: #f1e7d8;
 }
 
-@theme inline {
-  --color-background:  var(--background);
-  --color-foreground:  var(--foreground);
-  --color-primary:     var(--color-primary);
-  --color-secondary:   var(--color-secondary);
-  --color-accent:      var(--color-accent);
-  --font-sans:         var(--font-sans);
-  --font-mono:         var(--font-mono);
-}
-
-/* Dark mode */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0f172a;
-    --foreground: #f1f5f9;
-  }
-}
-
-/* Base reset */
-*, *::before, *::after {
+* {
   box-sizing: border-box;
 }
 
-html {
-  scroll-behavior: smooth;
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  min-height: 100dvh;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  background: var(--uiu-paper);
+  color: var(--uiu-navy);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.portal-shell,
+.portal-frame-wrap,
+.portal-frame {
+  width: 100%;
+  height: 100dvh;
+}
+
+.portal-shell {
+  position: relative;
+  overflow: hidden;
+  background: var(--uiu-paper);
+}
+
+.portal-frame-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: 50% 45%;
+}
+
+.portal-frame {
+  display: block;
+  border: 0;
+  background: var(--uiu-paper);
+}
+
+.portal-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background:
+    linear-gradient(rgba(8, 38, 59, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 38, 59, .035) 1px, transparent 1px),
+    var(--uiu-paper);
+  background-size: 86px 86px;
+  color: var(--uiu-navy);
+}
+
+.portal-loader__mark {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  border-radius: 16px;
+  background: var(--uiu-orange);
+  box-shadow: 0 14px 32px rgba(243, 90, 18, .24);
+  color: white;
+  font-weight: 900;
+  letter-spacing: -.06em;
+}
+
+.portal-loader strong,
+.portal-loader span {
+  display: block;
+}
+
+.portal-loader strong {
+  font-size: 18px;
+  letter-spacing: -.025em;
+}
+
+.portal-loader span {
+  margin-top: 3px;
+  color: rgba(8, 38, 59, .62);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }
