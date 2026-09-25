@@ -209,3 +209,168 @@ create table public.activity_log (
   created_at timestamptz not null default now()
 );
 
+create index items_public_feed_idx on public.items (approval_status, status, created_at desc);
+create index items_reporter_idx on public.items (reporter_id, created_at desc);
+create index items_category_type_idx on public.items (category_id, type, occurred_on desc);
+create index claims_item_idx on public.claims (item_id, status, created_at desc);
+create index claims_claimant_idx on public.claims (claimant_id, created_at desc);
+create index messages_conversation_idx on public.messages (conversation_id, created_at);
+create index notifications_user_idx on public.notifications (user_id, read_at, created_at desc);
+create index activity_log_created_idx on public.activity_log (created_at desc);
+
+create function private.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create function private.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = (select auth.uid())
+      and p.role = 'admin'
+      and p.is_active
+  );
+$$;
+
+create function private.owns_item(target_item_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.items i
+    where i.id = target_item_id
+      and i.reporter_id = (select auth.uid())
+  );
+$$;
+
+create function private.can_read_item_photo(target_path text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.items i
+    where i.photo_path = target_path
+      and (
+        i.approval_status = 'approved'
+        or i.reporter_id = (select auth.uid())
+        or private.is_admin()
+      )
+  );
+$$;
+
+create function private.is_claim_party(target_claim_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.claims c
+    join public.items i on i.id = c.item_id
+    where c.id = target_claim_id
+      and ((select auth.uid()) = c.claimant_id or (select auth.uid()) = i.reporter_id)
+  );
+$$;
+
+create function private.is_conversation_party(target_conversation_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.conversations cv
+    join public.claims c on c.id = cv.claim_id
+    join public.items i on i.id = c.item_id
+    where cv.id = target_conversation_id
+      and ((select auth.uid()) = c.claimant_id or (select auth.uid()) = i.reporter_id)
+  );
+$$;
+
+revoke execute on function private.is_admin() from public;
+revoke execute on function private.owns_item(uuid) from public;
+revoke execute on function private.can_read_item_photo(text) from public;
+revoke execute on function private.is_claim_party(uuid) from public;
+revoke execute on function private.is_conversation_party(uuid) from public;
+grant usage on schema private to anon, authenticated;
+grant execute on function private.is_admin() to anon, authenticated;
+grant execute on function private.owns_item(uuid) to authenticated;
+grant execute on function private.can_read_item_photo(text) to anon, authenticated;
+grant execute on function private.is_claim_party(uuid) to authenticated;
+grant execute on function private.is_conversation_party(uuid) to authenticated;
+
+create function private.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  inferred_name text;
+  inferred_student_id text;
+  inferred_role public.app_role;
+begin
+  inferred_name := coalesce(
+    nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),
+    nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+    'UIU Student'
+  );
+  inferred_student_id := coalesce(
+    nullif(trim(new.raw_user_meta_data ->> 'student_id'), ''),
+    nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+    new.id::text
+  );
+  -- Open portal: the sign-in tab picks the role, so honour it at creation.
+  inferred_role := case
+    when lower(coalesce(new.raw_user_meta_data ->> 'role', '')) = 'admin' then 'admin'
+    else 'student'
+  end::public.app_role;
+
+  insert into public.profiles (id, full_name, department, role)
+  values (
+    new.id,
+    inferred_name,
+    coalesce(nullif(trim(new.raw_user_meta_data ->> 'department'), ''), 'Not specified'),
+    inferred_role
+  );
+
+  insert into public.profile_private (user_id, student_id, phone)
+  values (
+    new.id,
+    inferred_student_id,
+    nullif(trim(new.raw_user_meta_data ->> 'phone'), '')
+  );
+
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function private.handle_new_user();
+
