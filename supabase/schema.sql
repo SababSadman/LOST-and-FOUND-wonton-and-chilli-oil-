@@ -374,3 +374,253 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function private.handle_new_user();
 
+create function private.validate_item_private_detail()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (
+    select 1 from public.items i
+    where i.id = new.item_id and i.reporter_id = new.reporter_id
+  ) then
+    raise exception 'Private detail reporter must match item reporter';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_item_private_detail
+  before insert or update on public.item_private_details
+  for each row execute function private.validate_item_private_detail();
+
+create function private.validate_claim()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_type public.item_type;
+  target_reporter uuid;
+begin
+  select i.type, i.reporter_id into target_type, target_reporter
+  from public.items i
+  where i.id = new.item_id and i.approval_status = 'approved' and i.status <> 'resolved';
+
+  if target_type is null then
+    raise exception 'Claims require an approved, unresolved item';
+  end if;
+  if target_reporter = new.claimant_id then
+    raise exception 'A reporter cannot claim their own item';
+  end if;
+  if (target_type = 'found' and new.kind <> 'ownership')
+     or (target_type = 'lost' and new.kind <> 'recovery') then
+    raise exception 'Claim kind does not match item type';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_claim
+  before insert or update of item_id, claimant_id, kind on public.claims
+  for each row execute function private.validate_claim();
+
+create function private.sync_item_from_claim()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if tg_op = 'INSERT' then
+    update public.items
+    set status = case
+      when new.kind = 'ownership' then 'pending_claim'::public.item_status
+      else 'match_under_review'::public.item_status
+    end
+    where id = new.item_id and status <> 'resolved';
+    return new;
+  end if;
+
+  if new.status = 'returned' and old.status <> 'returned' then
+    update public.items set status = 'resolved' where id = new.item_id;
+  elsif new.status = 'rejected' and old.status <> 'rejected'
+        and not exists (
+          select 1 from public.claims c
+          where c.item_id = new.item_id
+            and c.id <> new.id
+            and c.status in ('pending', 'approved')
+        ) then
+    update public.items set status = 'open' where id = new.item_id and status <> 'resolved';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger sync_item_after_claim_insert
+  after insert on public.claims
+  for each row execute function private.sync_item_from_claim();
+
+create trigger sync_item_after_claim_status
+  after update of status on public.claims
+  for each row execute function private.sync_item_from_claim();
+
+create function private.validate_claim_evidence()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (
+    select 1 from public.claims c
+    where c.id = new.claim_id and c.claimant_id = new.claimant_id
+  ) then
+    raise exception 'Evidence claimant must match claim claimant';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_claim_evidence
+  before insert or update on public.claim_evidence
+  for each row execute function private.validate_claim_evidence();
+
+create function private.validate_item_match()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (select 1 from public.items where id = new.lost_item_id and type = 'lost')
+     or not exists (select 1 from public.items where id = new.found_item_id and type = 'found') then
+    raise exception 'Match must connect one lost item and one found item';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_item_match
+  before insert or update on public.item_matches
+  for each row execute function private.validate_item_match();
+
+create function private.validate_conversation()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (
+    select 1 from public.claims c
+    where c.id = new.claim_id and c.item_id = new.item_id and c.status = 'approved'
+  ) then
+    raise exception 'Conversation requires an approved claim for this item';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_conversation
+  before insert or update on public.conversations
+  for each row execute function private.validate_conversation();
+
+create function private.guard_item_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if current_user in ('postgres', 'service_role', 'supabase_admin')
+     or private.is_admin() then
+    return new;
+  end if;
+
+  if old.reporter_id <> (select auth.uid())
+     or old.approval_status <> 'pending'
+     or new.approval_status <> 'pending' then
+    raise exception 'Users may only edit their own pending submissions';
+  end if;
+
+  new.reporter_id = old.reporter_id;
+  new.status = old.status;
+  new.reviewed_by = old.reviewed_by;
+  new.reviewed_at = old.reviewed_at;
+  new.rejection_reason = old.rejection_reason;
+  new.created_at = old.created_at;
+  return new;
+end;
+$$;
+
+create trigger guard_item_update
+  before update on public.items
+  for each row execute function private.guard_item_update();
+
+create function private.guard_handover_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if current_user in ('postgres', 'service_role', 'supabase_admin')
+     or private.is_admin() then
+    if new.status = 'complete' and old.status <> 'complete' then
+      new.completed_at = now();
+      new.completed_by = (select auth.uid());
+    end if;
+    return new;
+  end if;
+
+  if not private.is_claim_party(old.claim_id)
+     or old.status <> 'proposed'
+     or new.status <> 'confirmed' then
+    raise exception 'Participants may only confirm a proposed handover';
+  end if;
+
+  -- A participant can confirm, but cannot alter the PIN or handover ownership.
+  new.claim_id = old.claim_id;
+  new.conversation_id = old.conversation_id;
+  new.location = old.location;
+  new.scheduled_for = old.scheduled_for;
+  new.pin_code = old.pin_code;
+  new.confirmed_at = now();
+  new.completed_at = old.completed_at;
+  new.completed_by = old.completed_by;
+  new.created_at = old.created_at;
+  return new;
+end;
+$$;
+
+create trigger guard_handover_update
+  before update on public.handovers
+  for each row execute function private.guard_handover_update();
+
+create trigger profiles_set_updated_at before update on public.profiles
+  for each row execute function private.set_updated_at();
+create trigger profile_private_set_updated_at before update on public.profile_private
+  for each row execute function private.set_updated_at();
+create trigger categories_set_updated_at before update on public.categories
+  for each row execute function private.set_updated_at();
+create trigger items_set_updated_at before update on public.items
+  for each row execute function private.set_updated_at();
+create trigger item_private_details_set_updated_at before update on public.item_private_details
+  for each row execute function private.set_updated_at();
+create trigger claims_set_updated_at before update on public.claims
+  for each row execute function private.set_updated_at();
+create trigger claim_evidence_set_updated_at before update on public.claim_evidence
+  for each row execute function private.set_updated_at();
+create trigger item_matches_set_updated_at before update on public.item_matches
+  for each row execute function private.set_updated_at();
+create trigger conversations_set_updated_at before update on public.conversations
+  for each row execute function private.set_updated_at();
+create trigger handovers_set_updated_at before update on public.handovers
+  for each row execute function private.set_updated_at();
+create trigger disputes_set_updated_at before update on public.disputes
+  for each row execute function private.set_updated_at();
+
