@@ -624,3 +624,282 @@ create trigger handovers_set_updated_at before update on public.handovers
 create trigger disputes_set_updated_at before update on public.disputes
   for each row execute function private.set_updated_at();
 
+insert into public.categories (name, code) values
+  ('Electronics', 'ELEC'),
+  ('Documents', 'DOCS'),
+  ('Keys', 'KEYS'),
+  ('Clothing', 'CLTH'),
+  ('Bags', 'BAGS'),
+  ('Accessories', 'ACCS'),
+  ('Others', 'OTHR');
+
+-- Revoke broad defaults, then grant only operations the app needs.
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+
+grant select on public.categories to anon;
+grant select (
+  id, category_id, type, approval_status, status, title, description,
+  public_location, occurred_on, photo_path, created_at, updated_at
+) on public.items to anon;
+grant select on public.profiles, public.profile_private, public.categories, public.items,
+  public.item_private_details, public.claims, public.claim_evidence, public.item_matches,
+  public.conversations, public.messages, public.handovers, public.notifications,
+  public.disputes, public.activity_log to authenticated;
+grant insert on public.items, public.item_private_details, public.claims,
+  public.claim_evidence, public.messages to authenticated;
+grant update on public.items, public.item_private_details, public.claims,
+  public.claim_evidence, public.item_matches, public.conversations,
+  public.handovers, public.disputes to authenticated;
+grant delete on public.items, public.claims to authenticated;
+grant insert on public.categories, public.item_matches, public.conversations,
+  public.handovers, public.disputes, public.activity_log to authenticated;
+grant update (full_name, department, avatar_path) on public.profiles to authenticated;
+grant update (phone) on public.profile_private to authenticated;
+grant update (read_at) on public.notifications to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+
+alter table public.profiles enable row level security;
+alter table public.profile_private enable row level security;
+alter table public.categories enable row level security;
+alter table public.items enable row level security;
+alter table public.item_private_details enable row level security;
+alter table public.claims enable row level security;
+alter table public.claim_evidence enable row level security;
+alter table public.item_matches enable row level security;
+alter table public.conversations enable row level security;
+alter table public.messages enable row level security;
+alter table public.handovers enable row level security;
+alter table public.notifications enable row level security;
+alter table public.disputes enable row level security;
+alter table public.activity_log enable row level security;
+
+create policy "authenticated can read active profiles"
+  on public.profiles for select to authenticated
+  using (is_active or id = (select auth.uid()) or (select private.is_admin()));
+create policy "users can update their profile"
+  on public.profiles for update to authenticated
+  using (id = (select auth.uid()))
+  with check (id = (select auth.uid()));
+
+create policy "users and admins can read private profile"
+  on public.profile_private for select to authenticated
+  using (user_id = (select auth.uid()) or (select private.is_admin()));
+create policy "users can update their private profile"
+  on public.profile_private for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+create policy "guests can read active categories"
+  on public.categories for select to anon using (is_active);
+create policy "users can read active categories"
+  on public.categories for select to authenticated
+  using (is_active or (select private.is_admin()));
+create policy "admins can insert categories"
+  on public.categories for insert to authenticated
+  with check ((select private.is_admin()));
+create policy "admins can update categories"
+  on public.categories for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+
+create policy "guests can read approved items"
+  on public.items for select to anon
+  using (approval_status = 'approved');
+create policy "users can read approved or related items"
+  on public.items for select to authenticated
+  using (
+    approval_status = 'approved'
+    or reporter_id = (select auth.uid())
+    or (select private.is_admin())
+  );
+create policy "users can submit pending items"
+  on public.items for insert to authenticated
+  with check (
+    reporter_id = (select auth.uid())
+    and approval_status = 'pending'
+    and status = 'open'
+    and reviewed_by is null
+    and reviewed_at is null
+  );
+create policy "admins can review items"
+  on public.items for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+create policy "owners can edit pending items"
+  on public.items for update to authenticated
+  using (reporter_id = (select auth.uid()) and approval_status = 'pending')
+  with check (reporter_id = (select auth.uid()) and approval_status = 'pending');
+create policy "owners can delete pending items"
+  on public.items for delete to authenticated
+  using (reporter_id = (select auth.uid()) and approval_status = 'pending');
+create policy "admins can delete items"
+  on public.items for delete to authenticated
+  using ((select private.is_admin()));
+
+create policy "owners and admins can read item secrets"
+  on public.item_private_details for select to authenticated
+  using (reporter_id = (select auth.uid()) or (select private.is_admin()));
+create policy "owners can create item secrets"
+  on public.item_private_details for insert to authenticated
+  with check (
+    reporter_id = (select auth.uid())
+    and (select private.owns_item(item_id))
+    and exists (
+      select 1 from public.items i
+      where i.id = item_id and i.approval_status = 'pending'
+    )
+  );
+create policy "owners and admins can update item secrets"
+  on public.item_private_details for update to authenticated
+  using (
+    (reporter_id = (select auth.uid()) and exists (
+      select 1 from public.items i
+      where i.id = item_id and i.approval_status = 'pending'
+    ))
+    or (select private.is_admin())
+  )
+  with check (
+    (reporter_id = (select auth.uid()) and exists (
+      select 1 from public.items i
+      where i.id = item_id and i.approval_status = 'pending'
+    ))
+    or (select private.is_admin())
+  );
+
+create policy "claim parties and admins can read claims"
+  on public.claims for select to authenticated
+  using ((select private.is_claim_party(id)) or (select private.is_admin()));
+create policy "users can create their own pending claims"
+  on public.claims for insert to authenticated
+  with check (claimant_id = (select auth.uid()) and status = 'pending');
+create policy "admins can review claims"
+  on public.claims for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+create policy "claimants can withdraw pending claims"
+  on public.claims for delete to authenticated
+  using (claimant_id = (select auth.uid()) and status = 'pending');
+
+create policy "claimants and admins can read claim evidence"
+  on public.claim_evidence for select to authenticated
+  using (claimant_id = (select auth.uid()) or (select private.is_admin()));
+create policy "claimants can create their evidence"
+  on public.claim_evidence for insert to authenticated
+  with check (claimant_id = (select auth.uid()));
+create policy "claimants can update pending evidence"
+  on public.claim_evidence for update to authenticated
+  using (
+    claimant_id = (select auth.uid())
+    and exists (select 1 from public.claims c where c.id = claim_id and c.status = 'pending')
+  )
+  with check (claimant_id = (select auth.uid()));
+
+create policy "item owners and admins can read matches"
+  on public.item_matches for select to authenticated
+  using (
+    (select private.owns_item(lost_item_id))
+    or (select private.owns_item(found_item_id))
+    or (select private.is_admin())
+  );
+create policy "admins can create matches"
+  on public.item_matches for insert to authenticated
+  with check ((select private.is_admin()));
+create policy "admins can update matches"
+  on public.item_matches for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+
+create policy "conversation parties and admins can read conversations"
+  on public.conversations for select to authenticated
+  using ((select private.is_conversation_party(id)) or (select private.is_admin()));
+create policy "admins can create conversations"
+  on public.conversations for insert to authenticated
+  with check ((select private.is_admin()));
+create policy "admins can update conversations"
+  on public.conversations for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+
+create policy "conversation parties and admins can read messages"
+  on public.messages for select to authenticated
+  using ((select private.is_conversation_party(conversation_id)) or (select private.is_admin()));
+create policy "conversation parties can send messages"
+  on public.messages for insert to authenticated
+  with check (
+    sender_id = (select auth.uid())
+    and (select private.is_conversation_party(conversation_id))
+  );
+
+create policy "handover parties and admins can read handovers"
+  on public.handovers for select to authenticated
+  using ((select private.is_claim_party(claim_id)) or (select private.is_admin()));
+create policy "admins can create handovers"
+  on public.handovers for insert to authenticated
+  with check ((select private.is_admin()));
+create policy "parties can confirm and admins can complete handovers"
+  on public.handovers for update to authenticated
+  using ((select private.is_claim_party(claim_id)) or (select private.is_admin()))
+  with check ((select private.is_claim_party(claim_id)) or (select private.is_admin()));
+
+create policy "users can read their notifications"
+  on public.notifications for select to authenticated
+  using (user_id = (select auth.uid()));
+create policy "users can mark their notifications read"
+  on public.notifications for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+create policy "admins can read disputes"
+  on public.disputes for select to authenticated using ((select private.is_admin()));
+create policy "admins can create disputes"
+  on public.disputes for insert to authenticated with check ((select private.is_admin()));
+create policy "admins can update disputes"
+  on public.disputes for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+
+create policy "authenticated users can read activity"
+  on public.activity_log for select to authenticated using (true);
+create policy "admins can create activity"
+  on public.activity_log for insert to authenticated with check ((select private.is_admin()));
+
+-- Private item-photo bucket. Use paths: <auth-user-id>/<item-id>/<filename>
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'item-photos',
+  'item-photos',
+  false,
+  5242880,
+  array['image/jpeg', 'image/png', 'image/webp']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+create policy "visible item photos can be downloaded"
+  on storage.objects for select to anon, authenticated
+  using (
+    bucket_id = 'item-photos'
+    and (select private.can_read_item_photo(name))
+  );
+create policy "users can upload item photos to their folder"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'item-photos'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
+create policy "users can update item photos in their folder"
+  on storage.objects for update to authenticated
+  using (
+    bucket_id = 'item-photos'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  )
+  with check (
+    bucket_id = 'item-photos'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
+create policy "users can delete item photos in their folder"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'item-photos'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
+
+commit;
+
