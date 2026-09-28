@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { usePortal } from '@/context/PortalContext';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export const AuthModal: React.FC = () => {
   const {
     authed,
+    authLoading,
     authMode,
     authRoleTab,
     setAuthRoleTab,
@@ -22,22 +23,32 @@ export const AuthModal: React.FC = () => {
 
   // Signup form refs
   const [signupName, setSignupName] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
   const [signupId, setSignupId] = useState('');
   const [signupDept, setSignupDept] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
 
+  if (authLoading) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md">
+        <div className="text-sm font-semibold text-amber-300">Connecting to UIU Lost &amp; Found…</div>
+      </div>
+    );
+  }
+
   if (authed) return null;
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    login(loginId || '011 231 042', loginPassword);
+    await login(loginId, loginPassword);
   };
 
-  const handleSignupSubmit = (e: React.FormEvent) => {
+  const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    signup(
+    await signup(
       signupName || 'UIU Student',
-      signupId || '011 231 999',
+      signupEmail,
+      signupId,
       signupDept || 'Computer Science & Engineering',
       signupPassword
     );
@@ -93,12 +104,12 @@ export const AuthModal: React.FC = () => {
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  {authRoleTab === 'admin' ? 'Admin ID / Email' : 'Student ID / Email'}
+                  {authRoleTab === 'admin' ? 'Admin Email' : 'Student Email'}
                 </label>
                 <input
-                  type="text"
+                  type="email"
                   required
-                  placeholder={authRoleTab === 'admin' ? 'admin@admin.uiu.ac.bd' : '011 231 042'}
+                  placeholder={authRoleTab === 'admin' ? 'admin@admin.uiu.ac.bd' : 'student@uiu.ac.bd'}
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-amber-500 transition-colors"
@@ -146,6 +157,20 @@ export const AuthModal: React.FC = () => {
                   placeholder="Tanvir Rahman"
                   value={signupName}
                   onChange={(e) => setSignupName(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  {authRoleTab === 'admin' ? 'Admin Email' : 'Student Email'}
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder={authRoleTab === 'admin' ? 'admin@admin.uiu.ac.bd' : 'student@uiu.ac.bd'}
+                  value={signupEmail}
+                  onChange={(e) => setSignupEmail(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-amber-500 transition-colors"
                 />
               </div>
