@@ -33,7 +33,7 @@ export const MyDeskView: React.FC = () => {
     otherDate: string;
     score: number;
     reasons: string;
-    otherId: number;
+    otherId: string | number;
   }[] = [];
 
   myOpenItems.forEach((item) => {
