@@ -6662,7 +6662,7 @@ class Component extends DCLogic {
     });
 
     /* ---- item detail ---- */
-    const selected = s.items.find(i => i.id === s.selectedItemId) || s.items[0];
+    const selected = s.items.find(i => i.id === s.selectedItemId) || s.items[0] || { id: null, title: 'No listing selected', category: '—', code: 'OTHR', type: 'found', status: 'Open', location: 'UIU Campus', date: '—', reporter: '—', mine: false, description: 'Nothing has been published yet.', hiddenDetail: '', photo: '' };
     const selSt = this.statusStyle(selected.status);
     const selectedIsFound = selected.type === 'found';
     const currentItem = {
@@ -6814,7 +6814,7 @@ class Component extends DCLogic {
 
     /* ---- messages ---- */
     const conversations = s.conversations.map(c => ({ ...c, onClick: () => this.selectConversation(c.id), bg: c.id === s.activeConversationId ? 'var(--orange-softer)' : 'transparent' }));
-    const activeConv = s.conversations.find(c => c.id === s.activeConversationId) || s.conversations[0];
+    const activeConv = s.conversations.find(c => c.id === s.activeConversationId) || s.conversations[0] || { id: null, itemTitle: '—', name: 'No conversations yet', avatar: '—', unread: false, lastMessage: 'Approved claims open a chat here.', time: '', messages: [] };
     const handoverStatus = activeConv.handover ? activeConv.handover.status : '';
     const currentConversation = {
       ...activeConv,
