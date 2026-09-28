@@ -2,19 +2,17 @@
 
 import React from 'react';
 import { usePortal } from '@/context/PortalContext';
-import { motion } from 'framer-motion';
 
 export const Navbar: React.FC = () => {
   const {
     view,
     role,
     notifications,
-    openNotification,
     goTo,
     currentProfile,
     logout,
     setAuthMode,
-    authed,
+    setAuthed,
   } = usePortal();
 
   const profile = currentProfile();
@@ -97,6 +95,7 @@ export const Navbar: React.FC = () => {
           <button
             onClick={() => {
               setAuthMode('login');
+              setAuthed(false);
               goTo('dashboard');
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-medium text-sm shadow-md shadow-orange-500/20 transition-all"
