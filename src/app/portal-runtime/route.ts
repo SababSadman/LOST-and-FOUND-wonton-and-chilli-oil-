@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PORTAL_ENHANCEMENT_SCRIPT,
   PORTAL_ENHANCEMENT_STYLES,
@@ -27,10 +28,9 @@ function escapeHtml(value: string) {
 
 export async function GET() {
   try {
-    const sourcePath = join(
-      process.cwd(),
-      'UIU-Lost-and-Found-standalone-fixed.html',
-    );
+    // Use __dirname relative to project root: src/app/portal-runtime -> ../../ -> root
+    const projectRoot = join(fileURLToPath(new URL('../../..', import.meta.url)));
+    const sourcePath = join(projectRoot, 'UIU-Lost-and-Found-standalone-fixed.html');
     const source = await readFile(sourcePath, 'utf8');
     const withStyles = injectBeforeLast(
       source,
