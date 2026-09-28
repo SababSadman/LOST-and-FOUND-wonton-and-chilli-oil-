@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   PORTAL_ENHANCEMENT_SCRIPT,
   PORTAL_ENHANCEMENT_STYLES,
@@ -28,10 +28,21 @@ function escapeHtml(value: string) {
 
 export async function GET() {
   try {
-    // Use __dirname relative to project root: src/app/portal-runtime -> ../../ -> root
-    const projectRoot = join(fileURLToPath(new URL('../../..', import.meta.url)));
-    const sourcePath = join(projectRoot, 'UIU-Lost-and-Found-standalone-fixed.html');
-    const source = await readFile(sourcePath, 'utf8');
+    const cwd = process.cwd();
+    const candidatePaths = [
+      join(cwd, 'public', 'UIU-Lost-and-Found-standalone-fixed.html'),
+      join(cwd, 'UIU-Lost-and-Found-standalone-fixed.html'),
+    ];
+
+    let sourcePath = candidatePaths[0];
+    for (const p of candidatePaths) {
+      if (existsSync(/*turbopackIgnore: true*/ p)) {
+        sourcePath = p;
+        break;
+      }
+    }
+
+    const source = await readFile(/*turbopackIgnore: true*/ sourcePath, 'utf8');
     const withStyles = injectBeforeLast(
       source,
       '</head>',
