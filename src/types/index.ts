@@ -21,7 +21,7 @@ export type AuthMode = 'login' | 'signup';
 export type AuthRoleTab = 'student' | 'admin';
 
 export interface Item {
-  id: number;
+  id: string | number;
   title: string;
   category: string;
   code: string;
@@ -39,8 +39,8 @@ export interface Item {
 }
 
 export interface Claim {
-  id: number;
-  itemId: number;
+  id: string | number;
+  itemId: string | number;
   kind: 'ownership' | 'recovery';
   itemTitle: string;
   itemMeta: string;
@@ -51,9 +51,9 @@ export interface Claim {
 }
 
 export interface ClaimReview {
-  id: number;
+  id: string | number;
   kind: 'ownership' | 'recovery';
-  itemId: number;
+  itemId: string | number;
   claimant: string;
   item: string;
   publicDesc: string;
@@ -64,7 +64,7 @@ export interface ClaimReview {
 }
 
 export interface Approval {
-  id: number;
+  id: string | number;
   type: 'lost' | 'found';
   title: string;
   category: string;
@@ -87,13 +87,14 @@ export interface DisputeClaimant {
 }
 
 export interface Dispute {
-  id: number;
+  id: string | number;
   itemTitle: string;
   code: string;
   claimants: DisputeClaimant[];
 }
 
 export interface Category {
+  id?: number;
   name: string;
   code: string;
 }
@@ -113,6 +114,8 @@ export interface HandoverInfo {
 
 export interface Conversation {
   id: string;
+  claimId?: string;
+  handoverId?: string;
   itemTitle: string;
   name: string;
   avatar: string;
