@@ -4,6 +4,7 @@ import {
   PORTAL_ENHANCEMENT_SCRIPT,
   PORTAL_ENHANCEMENT_STYLES,
 } from '@/lib/portalEnhancements';
+import { buildSupabaseInjection } from '@/lib/portalSupabaseBridge';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,8 +37,16 @@ export async function GET() {
       '</head>',
       PORTAL_ENHANCEMENT_STYLES,
     );
-    const enhanced = injectBeforeLast(
+    const withSupabase = injectBeforeLast(
       withStyles,
+      '</body>',
+      buildSupabaseInjection(
+        process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? '',
+      ),
+    );
+    const enhanced = injectBeforeLast(
+      withSupabase,
       '</body>',
       PORTAL_ENHANCEMENT_SCRIPT,
     );
