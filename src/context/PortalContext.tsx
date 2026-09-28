@@ -647,7 +647,6 @@ export const PortalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       if (!user) throw new Error('Unable to start a session for this account.');
       const userId = user.id;
-      await supabase.from('profiles').update({ role: desiredRole }).eq('id', userId);
       const assignedRole = await loadProfile(userId);
 
       await Promise.all([refreshPortalData(userId), refreshUserData(userId)]);
@@ -696,7 +695,6 @@ export const PortalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         return;
       }
 
-      await supabase.from('profiles').update({ role: desiredRole }).eq('id', userId);
       await loadProfile(userId);
       await Promise.all([
         refreshPortalData(userId),
