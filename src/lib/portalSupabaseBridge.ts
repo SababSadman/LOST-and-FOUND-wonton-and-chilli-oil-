@@ -67,11 +67,11 @@ const DATA_LAYER = String.raw`
         }
       }
 
-      const user = res.data.user;
-      this.userId = user.id;
-      await db.from('profiles').update({ role: desiredRole }).eq('id', user.id);
-      this.role = desiredRole;
-      return user;
+      // The role comes from the signup trigger's metadata; it is not in the
+      // profiles column grant, so it cannot be reassigned from the client.
+      // An existing account keeps whatever role it was created with.
+      this.userId = res.data.user.id;
+      return res.data.user;
     },
 
     async signOut() {
@@ -202,6 +202,119 @@ const DATA_LAYER = String.raw`
       }));
 
       return { claims, claimReviews, notifications, activity };
+    },
+
+    // Conversations carry their messages and the handover they belong to.
+    async loadConversations(userId) {
+      const { data, error } = await db
+        .from('conversations')
+        .select('id, claim_id, updated_at, item:items!conversations_item_id_fkey(title), claim:claims!conversations_claim_id_fkey(claimant_id), handover:handovers(id, pin_code, status, location), messages(id, sender_id, body, created_at)')
+        .order('updated_at', { ascending: false });
+      if (error) throw error;
+
+      return (data || []).map((c) => {
+        const item = first(c.item);
+        const claim = first(c.claim);
+        const ho = first(c.handover);
+        const title = (item && item.title) || 'Item';
+        const msgs = [...(c.messages || [])].sort((a, b) =>
+          String(a.created_at).localeCompare(String(b.created_at)));
+        const last = msgs[msgs.length - 1];
+        return {
+          id: c.id,
+          claimId: c.claim_id,
+          handoverId: ho ? ho.id : null,
+          itemTitle: title,
+          name: (claim && claim.claimant_id === userId ? 'Finder · ' : 'Claimant · ') + title,
+          avatar: initials(title),
+          unread: false,
+          lastMessage: last ? last.body : 'Handover approved. Agree a time and confirm.',
+          time: new Date(last ? last.created_at : c.updated_at)
+            .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          handover: ho ? {
+            text: ho.location + ' — agree a time with the other participant',
+            status: ho.status === 'cancelled' ? 'proposed' : ho.status,
+            code: ho.pin_code,
+          } : undefined,
+          messages: msgs.map((m) => ({
+            mine: m.sender_id === userId,
+            text: m.body,
+            time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            status: m.sender_id === userId ? 'Sent' : undefined,
+          })),
+        };
+      });
+    },
+
+    async sendMessage(conversationId, body, userId) {
+      const { error } = await db.from('messages')
+        .insert({ conversation_id: conversationId, sender_id: userId, body: body.trim() });
+      if (error) throw error;
+      await db.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversationId);
+    },
+
+    // A participant may only move proposed -> confirmed; the guard trigger
+    // rejects anything else and reserves completion for admins.
+    async confirmHandover(handoverId) {
+      const { error } = await db.from('handovers')
+        .update({ status: 'confirmed' }).eq('id', handoverId);
+      if (error) throw error;
+    },
+
+    async completeHandover(handoverId, claimId, itemId) {
+      const { error } = await db.from('handovers')
+        .update({ status: 'complete' }).eq('id', handoverId);
+      if (error) throw error;
+      await db.from('claims').update({ status: 'returned' }).eq('id', claimId);
+      if (itemId) await db.from('items').update({ status: 'resolved' }).eq('id', itemId);
+    },
+
+    // Disputes are keyed by item; the UI groups the competing claimants itself.
+    async loadDisputes() {
+      const { data, error } = await db
+        .from('disputes')
+        .select('id, item_id, status, reason, item:items!disputes_item_id_fkey(title, category:categories(code))')
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
+      if (error) return [];
+
+      const rows = data || [];
+      if (!rows.length) return [];
+      const ids = rows.map((d) => d.item_id);
+      const { data: claims } = await db
+        .from('claims')
+        .select('item_id, created_at, claimant:profiles!claims_claimant_id_fkey(full_name), evidence:claim_evidence(identifying_feature, proof)')
+        .in('item_id', ids);
+
+      return rows.map((d) => {
+        const item = first(d.item);
+        const cat = item ? first(item.category) : null;
+        const mine = (claims || []).filter((c) => c.item_id === d.item_id);
+        return {
+          id: d.id,
+          itemTitle: (item && item.title) || 'Item',
+          code: (cat && cat.code) || 'OTHR',
+          claimants: mine.map((c) => {
+            const ev = first(c.evidence);
+            return {
+              name: (first(c.claimant) || {}).full_name || 'UIU User',
+              answer: ev ? (ev.identifying_feature + ' ' + ev.proof).trim() : '—',
+              date: new Date(c.created_at).toLocaleDateString('en-GB'),
+            };
+          }),
+        };
+      });
+    },
+
+    async resolveDispute(disputeId, adminId, escalatedTo) {
+      const patchRow = {
+        status: escalatedTo ? 'escalated' : 'resolved',
+        resolved_by: adminId,
+        resolved_at: new Date().toISOString(),
+      };
+      if (escalatedTo) patchRow.escalated_to = escalatedTo;
+      const { error } = await db.from('disputes').update(patchRow).eq('id', disputeId);
+      if (error) throw error;
     },
 
     async uploadPhoto(dataUrl, itemId, userId) {
@@ -358,21 +471,6 @@ const OVERRIDES = String.raw`
     return null;
   };
 
-  // The template reads items[0] / conversations[0] without a guard. These stand
-  // in when the real tables are empty so rendering cannot throw; the UI filters
-  // them out of every list it shows.
-  const PLACEHOLDER_ITEMS = [{
-    id: '__none__', title: 'No listings yet', category: 'Others', code: 'OTHR',
-    type: 'found', status: 'Open', location: 'UIU Campus', date: '—',
-    reporter: 'UIU Community', mine: false, placeholder: true,
-    description: 'Nothing has been published yet.', hiddenDetail: '', photo: '',
-  }];
-  const PLACEHOLDER_CONVERSATIONS = [{
-    id: 'c1', itemTitle: '—', name: 'No conversations yet', avatar: '—',
-    unread: false, lastMessage: 'Approved claims open a chat here.',
-    time: '', placeholder: true, messages: [],
-  }];
-
   const patch = (app) => {
     const setS = (patchObj) => new Promise((r) => app.setState(patchObj, r));
     const toast = (m) => app.showToast(m);
@@ -385,13 +483,21 @@ const OVERRIDES = String.raw`
         const portal = await Data.loadPortal(uid);
         const patchObj = {
           categories: portal.categories,
-          items: portal.items.length ? portal.items : PLACEHOLDER_ITEMS,
+          items: portal.items,
           approvals: portal.approvals,
         };
         if (uid) {
-          const mine = await Data.loadUser(uid);
+          const [mine, convos] = await Promise.all([
+            Data.loadUser(uid),
+            Data.loadConversations(uid),
+          ]);
           Object.assign(patchObj, mine);
-          if (!patchObj.activity.length) delete patchObj.activity;
+          patchObj.conversations = convos;
+          if (Data.role === 'admin') patchObj.disputes = await Data.loadDisputes();
+          const convIds = convos.map((c) => c.id);
+          if (!convIds.includes(app.state.activeConversationId)) {
+            patchObj.activeConversationId = convIds[0] || '';
+          }
         }
         // Keep a selection that exists, or the template's find() falls through.
         const ids = patchObj.items.map((i) => i.id);
@@ -413,7 +519,13 @@ const OVERRIDES = String.raw`
         if (profile) patchObj[Data.role === 'admin' ? 'profileAdmin' : 'profileStudent'] = profile;
         await setS(patchObj);
         await app.refreshAll();
-        toast(Data.role === 'admin' ? 'Welcome back, Admin.' : 'Welcome back!');
+        // An existing account keeps the role it was created with, so say so
+        // rather than silently landing them somewhere they did not choose.
+        if (Data.role !== role) {
+          toast('Signed in as ' + Data.role + '. This account was created as a ' + Data.role + '.');
+        } else {
+          toast(Data.role === 'admin' ? 'Welcome back, Admin.' : 'Welcome back!');
+        }
       } catch (err) { fail(err); }
     };
 
@@ -558,6 +670,69 @@ const OVERRIDES = String.raw`
       catch (err) { fail(err); }
     };
 
+    app.sendChat = async function (e) {
+      e.preventDefault();
+      const input = app.chatInputRef.current;
+      const text = input ? input.value.trim() : '';
+      if (!text) return;
+      const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
+      if (!conv || !Data.userId) return toast('Open a conversation first.');
+      if (input) input.value = '';
+      try {
+        await Data.sendMessage(conv.id, text, Data.userId);
+        await app.refreshAll();
+      } catch (err) { if (input) input.value = text; fail(err); }
+    };
+
+    app.confirmHandover = async function () {
+      const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
+      if (!conv || !conv.handoverId) return toast('No handover to confirm yet.');
+      try {
+        await Data.confirmHandover(conv.handoverId);
+        await app.refreshAll();
+        toast('Handover confirmed. Use the code at the desk.');
+      } catch (err) { fail(err); }
+    };
+
+    app.completeHandover = async function () {
+      const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
+      if (!conv || !conv.handoverId) return;
+      if (Data.role !== 'admin') {
+        return toast('Only the desk can close a handover. Show your code at Student Affairs.');
+      }
+      const claim = app.state.claims.find((c) => c.id === conv.claimId);
+      try {
+        await Data.completeHandover(conv.handoverId, conv.claimId, claim ? claim.itemId : null);
+        await app.refreshAll();
+        toast('Handover complete. Case closed.');
+      } catch (err) { fail(err); }
+    };
+
+    app.awardDispute = async function (disputeId, claimantName) {
+      try {
+        await Data.resolveDispute(disputeId, Data.userId, null);
+        await app.refreshAll();
+        toast('Awarded to ' + claimantName + '.');
+      } catch (err) { fail(err); }
+    };
+
+    app.escalateDispute = async function (disputeId) {
+      try {
+        await Data.resolveDispute(disputeId, Data.userId, 'Student Affairs');
+        await app.refreshAll();
+        toast('Escalated to Student Affairs.');
+      } catch (err) { fail(err); }
+    };
+
+    app.markAllRead = async function () {
+      if (!Data.userId) return;
+      try {
+        await Data.markNotificationsRead(Data.userId);
+        await app.refreshAll();
+        toast('All notifications marked as read.');
+      } catch (err) { fail(err); }
+    };
+
     if (typeof app.saveProfile === 'function') {
       app.saveProfile = async function (e) {
         if (e && e.preventDefault) e.preventDefault();
@@ -579,11 +754,8 @@ const OVERRIDES = String.raw`
     // Start from a clean slate: drop the bundle's demo rows, then load real data.
     (async () => {
       const user = await Data.currentUser();
-      // renderVals() dereferences items[0] and conversations[0] unguarded, so an
-      // empty table would crash the template. Keep one inert placeholder each.
       const blank = { items: [], approvals: [], claims: [], claimReviews: [],
-        notifications: [], activity: [], conversations: PLACEHOLDER_CONVERSATIONS,
-        disputes: [] };
+        notifications: [], activity: [], conversations: [], disputes: [] };
       if (user) {
         Data.userId = user.id;
         const profile = await Data.loadProfile(user.id);
