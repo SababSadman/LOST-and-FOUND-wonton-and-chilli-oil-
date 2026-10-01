@@ -64,3 +64,114 @@ export async function createClient() {
 
 For cookie-based authentication, also add Supabase's current SSR session-refresh proxy pattern. Use the official SSR guide because cookie APIs and recommended validation calls can change between releases.
 
+## 3. Sign up users and create profiles
+
+The schema trigger automatically creates `profiles` and `profile_private` rows. Pass profile fields as sign-up metadata:
+
+```ts
+const supabase = createClient();
+
+const { error } = await supabase.auth.signUp({
+  email,
+  password,
+  options: {
+    data: {
+      full_name,
+      student_id,
+      department,
+      phone,
+    },
+  },
+});
+```
+
+Supabase Auth signs in with an email or phone by default. The current UI asks for a UIU ID. The simplest secure change is to ask for the user's UIU email and keep the UIU ID in `profile_private.student_id`. If login by student ID is mandatory, resolve it in a protected Server Action; do not expose a public student-ID-to-email lookup.
+
+Every new user is a `student`. To bootstrap the first administrator, first sign that user up, then run this once in SQL Editor:
+
+```sql
+update public.profiles
+set role = 'admin'
+where id = (select id from auth.users where email = 'ADMIN_UIU_EMAIL');
+```
+
+## 4. Replace mock state with database calls
+
+The current `PortalContext` stores everything in React state and starts from `src/data/mockData.ts`. Migrate one feature at a time:
+
+- `INITIAL_CATEGORIES` -> `supabase.from('categories').select('*')`
+- `INITIAL_ITEMS` and approval queue -> `items`; RLS returns the correct public/owner/admin rows
+- held-back detail -> `item_private_details`
+- claims and verification answers -> `claims` + `claim_evidence`
+- chat -> `conversations` + `messages`
+- handover workflow -> `handovers`
+- alerts -> `notifications`
+
+For a signed-out guest query, explicitly select `public_location` instead of `location`. PostgreSQL column grants prevent the anonymous API role from reading the exact location or reporter ID even if someone bypasses the UI.
+
+Example server query:
+
+```ts
+const supabase = await createClient();
+const { data: items, error } = await supabase
+  .from('items')
+  .select('*, category:categories(id, name, code), reporter:profiles(id, full_name)')
+  .eq('approval_status', 'approved')
+  .order('created_at', { ascending: false });
+```
+
+Example item submission (create the item first, then its private detail):
+
+```ts
+const { data: { user } } = await supabase.auth.getUser();
+if (!user) throw new Error('Sign in required');
+
+const { data: item, error: itemError } = await supabase
+  .from('items')
+  .insert({
+    reporter_id: user.id,
+    category_id,
+    type: 'lost',
+    title,
+    description,
+    location,
+    occurred_on,
+    photo_path,
+  })
+  .select('id')
+  .single();
+
+if (itemError) throw itemError;
+
+const { error: secretError } = await supabase
+  .from('item_private_details')
+  .insert({ item_id: item.id, reporter_id: user.id, hidden_detail });
+
+if (secretError) throw secretError;
+```
+
+If you want the storage path to contain the item ID, generate the UUID in the browser first with `crypto.randomUUID()`, upload to `<user-id>/<item-id>/<filename>`, and include that same `id` and `photo_path` in the item insert. Alternatively, create the pending item first, upload the photo, and update its `photo_path`; RLS permits reporters to edit only their own pending submissions.
+
+For production, wrap the item + private-detail inserts in one database function or trusted Server Action so they succeed or fail together.
+
+## 5. Upload item photos
+
+The migration creates a private `item-photos` bucket. Store objects at:
+
+```text
+<authenticated-user-id>/<item-id>/<safe-filename>
+```
+
+Save that full object path in `items.photo_path`. Use `createSignedUrl()` to display a photo. Storage RLS permits downloads only when the item is approved, belongs to the requesting reporter, or the requester is an admin.
+
+## Security rules already included
+
+- Guests can read only approved item rows and active categories.
+- Hidden item details are readable only by their reporter and admins.
+- Claim evidence and contact phone are readable only by the claimant and admins.
+- Reporters can see claim status, but not the claimant's private evidence.
+- Only admins can approve/reject items and claims or manage disputes/matches.
+- Only conversation participants can read/send messages.
+- Participants may confirm a proposed handover; only an admin can complete it.
+- The publishable key is safe in browser code because RLS limits access. The service-role key bypasses RLS and must remain server-only.
+
