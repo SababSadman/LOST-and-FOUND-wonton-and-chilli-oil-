@@ -902,9 +902,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         if (act === 'replace') {
           this._exitReframe(true);
           // Host-owned picker (Unsplash modal; it also offers local import).
-          this.dispatchEvent(new CustomEvent('image-slot:pick', {
-            bubbles: true, composed: true, detail: { id: this.id || null }
-          }));
+          this._input.click();
         }
         if (act === 'edit') {
           if (!this._reframes()) return;
@@ -1199,6 +1197,12 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       }
     }
 
+    static clearDraftImages() { for (const id of ['profile-avatar', 'lost-photo-slot', 'found-photo-slot']) setSlot(id, null); }
+    get imageSource() { return this._userUrl || this.getAttribute('src') || ''; }
+    get imageLoading() { return !!this._encodingImage; }
+    chooseImage() { this._input.click(); }
+    clearImage() { ++this._gen; this._swapGen = 0; this._encodingImage = false; setSlot(this.id || '', null); this._local = null; this.removeAttribute('src'); this._render(); }
+
     async _ingest(file) {
       this._setError(null);
       if (!file || ACCEPT.indexOf(file.type) < 0) {
@@ -1221,6 +1225,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         this.setAttribute('data-swapping', '');
         this._swapGen = gen;
       }
+      this._encodingImage = true;
       try {
         const w = this.clientWidth || this.offsetWidth || MAX_DIM;
         const url = await toDataUrl(file, w);
@@ -1246,7 +1251,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         this._releaseMask();
         this._setError('Could not read that image.');
         console.warn('<image-slot> ingest failed:', err);
-      }
+      } finally { if (gen === this._gen) this._encodingImage = false; }
     }
 
     _setError(msg) {
@@ -3479,7 +3484,13 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 })();
 
 </script>
-</head>
+<style>
+    .posted-photo{display:block;width:100%;height:100%;object-fit:cover;}
+    .detail-photo{width:100%;height:340px;border-radius:18px;object-fit:contain;background:rgba(8,32,47,.06);}
+    .report-photo{width:90px;height:90px;object-fit:cover;border-radius:12px;flex-shrink:0;}
+    .photo-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--ink-soft);background:rgba(8,32,47,.06);font-size:13px;}
+    .image-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
+  </style></head>
 <body>
 <x-dc>
 <helmet>
@@ -4372,8 +4383,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         <h2 style="margin-top:26px;font-size:23px;">Welcome back</h2>
         <p class="lede" style="margin-top:6px;font-size:13px;">Sign in with your UIU credentials to continue.</p>
         <form onSubmit="{{ login }}" style="margin-top:22px;display:grid;gap:15px;">
-          <label class="field"><span>UIU ID or email</span>
-            <input class="inp" ref="{{ loginIdRef }}" required placeholder="e.g. 0111230123" />
+          <label class="field"><span>Email address</span>
+            <input class="inp" ref="{{ loginIdRef }}" type="email" autoComplete="email" required placeholder="you@example.com" />
           </label>
           <label class="field"><span>Password</span>
             <input class="inp" ref="{{ loginPasswordRef }}" type="password" required placeholder="••••••••" />
@@ -4392,10 +4403,12 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         <p class="lede" style="margin-top:6px;font-size:13px;">For UIU students and staff only.</p>
         <form onSubmit="{{ signup }}" style="margin-top:22px;display:grid;gap:15px;">
           <label class="field"><span>Full name</span>
-            <input class="inp" ref="{{ signupNameRef }}" required placeholder="Your full name" />
+            <input class="inp" ref="{{ signupNameRef }}" required minLength="2" maxLength="100" placeholder="Your full name" />
           </label>
           <label class="field"><span>UIU ID or staff email</span>
-            <input class="inp" ref="{{ signupIdRef }}" required placeholder="e.g. 0111230123" />
+            <input class="inp" ref="{{ signupIdRef }}" required minLength="3" maxLength="40" placeholder="e.g. 0111230123" />
+          </label>
+          <label class="field"><span>Email address</span><input class="inp" ref="{{ signupEmailRef }}" type="email" autoComplete="email" required placeholder="you@example.com" />
           </label>
           <label class="field"><span>Department</span>
             <select class="inp" ref="{{ signupDeptRef }}" required>
@@ -4472,10 +4485,11 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             </sc-if>
           </button>
           <button class="avatar-btn" title="Profile" onClick="{{ onGoProfile }}">
-            <sc-if value="{{ profileHasPhoto }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ profileHasUploadedPhoto }}"><span class="avatar avatar--photo"><img class="posted-photo" src="{{ profilePhoto }}" alt="Profile photo" /></span></sc-if>
+            <sc-if value="{{ profileHasIllustration }}" hint-placeholder-val="{{ true }}">
               <span class="avatar avatar--photo"><svg class="avatar-photo" viewBox="0 0 1080 1080" role="img" aria-label="Profile photo"><use href="#{{ profilePhotoId }}"></use></svg></span>
             </sc-if>
-            <sc-if value="{{ profileNoPhoto }}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{ profileShowInitials }}" hint-placeholder-val="{{ false }}">
               <span class="avatar">{{ profileInitials }}</span>
             </sc-if>
           </button>
@@ -4610,7 +4624,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             <sc-for list="{{ filteredItems }}" as="item" hint-placeholder-count="6">
               <article class="card">
                 <div class="card__media">
-                  <image-slot id="item-photo-{{ item.id }}" shape="rect" src="{{ item.photo }}" credit="{{ item.credit }}" credit-href="{{ item.creditHref }}" placeholder="No photo yet"></image-slot>
+                  <sc-if value="{{ item.photo }}"><img class="posted-photo" src="{{ item.photo }}" alt="{{ item.title }}" loading="lazy" /></sc-if><sc-if value="{{ item.noPhoto }}"><span class="photo-empty">No photo added</span></sc-if>
                   <span class="card__code">#{{ item.code }}</span>
                   <span class="card__status" data-dc-style="background:{{ item.statusBg }};color:{{ item.statusColor }};border:1.5px solid {{ item.statusColor }};">
                     <sc-if value="{{ item.isResolved }}" hint-placeholder-val="{{ false }}"><span class="icon icon-tick icon--xs"></span></sc-if>
@@ -4656,7 +4670,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           <button class="backlink" onClick="{{ onGoBrowse }}">&larr; Back to the counter</button>
           <div class="detail">
             <div style="min-width:0;">
-              <image-slot id="detail-photo-{{ currentItem.id }}" shape="rounded" radius="18" src="{{ currentItem.photo }}" credit="{{ currentItem.credit }}" credit-href="{{ currentItem.creditHref }}" placeholder="No photo yet" style="width:100%;height:340px;"></image-slot>
+              <sc-if value="{{ currentItem.photo }}"><img class="posted-photo detail-photo" src="{{ currentItem.photo }}" alt="{{ currentItem.title }}" /></sc-if><sc-if value="{{ currentItem.noPhoto }}"><div class="photo-empty detail-photo">No photo added</div></sc-if>
+              <sc-if value="{{ canChangeItemImage }}"><button type="button" class="btn btn--ghost btn--sm" style="margin-top:12px;" onClick="{{ onChangeItemImage }}">Add / change image</button></sc-if>
               <div style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:20px;">
                 <span class="code code--ink">#{{ currentItem.code }}</span>
                 <span class="status-stamp" data-dc-style="background:{{ currentItem.statusBg }};color:{{ currentItem.statusColor }};border:1.5px solid {{ currentItem.statusColor }};padding:5px 11px;">{{ currentItem.status }}</span>
@@ -4729,13 +4744,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                   <label class="field"><span>{{ claimProofLabel }}</span>
                     <textarea class="inp" ref="{{ claimProofRef }}" required style="min-height:74px;" placeholder="{{ claimProofHint }}"></textarea>
                   </label>
-                  <label class="field"><span>Preferred contact method</span>
-                    <select class="inp" ref="{{ claimContactRef }}" required>
-                      <option value="">Select method</option>
-                      <option>Portal chat</option>
-                      <option>University email</option>
-                      <option>Phone after approval</option>
-                    </select>
+                  <label class="field"><span>Contact phone (admin only)</span>
+                    <input class="inp" type="tel" ref="{{ claimContactRef }}" required minLength="7" maxLength="25" placeholder="01700000000" />
                   </label>
                   <div style="display:flex;gap:8px;">
                     <button type="submit" class="btn btn--flare" style="flex:1;">{{ claimSubmitLabel }}</button>
@@ -4801,7 +4811,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 <input class="inp" ref="{{ lostLocationRef }}" required placeholder="Example: Library, Level 4" />
               </label>
               <label class="field span-2 found-photo-field"><span><svg class="lost-field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 5-5 4 4 2-2 5 4"/></svg>Item photo <em style="font-weight:400;color:var(--ink-soft);">(optional)</em></span>
-                <image-slot id="lost-photo-slot" shape="rounded" radius="14" placeholder="Drop or choose a photo of the item" style="width:100%;height:170px;"></image-slot>
+                <image-slot id="lost-photo-slot" shape="rounded" radius="14" placeholder="Drop or choose a photo of the item" style="width:100%;height:170px;"></image-slot><div class="image-actions"><button type="button" class="btn btn--ghost btn--sm" data-image-choose="lost-photo-slot">Add / change image</button><button type="button" class="btn btn--ghost btn--sm" data-image-clear="lost-photo-slot">Remove image</button></div>
               </label>
               <label class="field span-2"><span><svg class="lost-field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a7 7 0 0 1-7 7H8l-4 3v-7a7 7 0 1 1 16-3Z"/><path d="M8 10h8M8 14h5"/></svg>Public description</span>
                 <div class="lost-textarea-wrap">
@@ -4874,7 +4884,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 <input class="inp" ref="{{ foundLocationRef }}" required placeholder="Example: Auditorium lobby" />
               </label>
               <label class="field span-2 found-photo-field"><span><svg class="lost-field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 5-5 4 4 2-2 5 4"/></svg>Item photo <em style="font-weight:400;color:var(--ink-soft);">(optional)</em></span>
-                <image-slot id="found-photo-slot" shape="rounded" radius="14" placeholder="Drop or choose a photo" style="width:100%;height:170px;"></image-slot>
+                <image-slot id="found-photo-slot" shape="rounded" radius="14" placeholder="Drop or choose a photo" style="width:100%;height:170px;"></image-slot><div class="image-actions"><button type="button" class="btn btn--ghost btn--sm" data-image-choose="found-photo-slot">Add / change image</button><button type="button" class="btn btn--ghost btn--sm" data-image-clear="found-photo-slot">Remove image</button></div>
               </label>
               <label class="field span-2"><span><svg class="lost-field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a7 7 0 0 1-7 7H8l-4 3v-7a7 7 0 1 1 16-3Z"/><path d="M8 10h8M8 14h5"/></svg>Public description</span>
                 <textarea class="inp" ref="{{ foundDescriptionRef }}" required placeholder="Describe the visible features without giving away every detail."></textarea>
@@ -4951,6 +4961,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             <div style="display:grid;gap:12px;" class="stagger">
               <sc-for list="{{ myReports }}" as="rep" hint-placeholder-count="3">
                 <div class="panel admin-action-row">
+                  <sc-if value="{{ rep.hasPhoto }}"><img class="report-photo" src="{{ rep.photo }}" alt="{{ rep.title }}" /></sc-if>
                   <div style="min-width:0;">
                     <div style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;">
                       <span class="code">#{{ rep.code }}</span>
@@ -4961,6 +4972,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     <p style="margin-top:7px;font-size:11.5px;color:var(--flare-deep);">{{ rep.matchNote }}</p>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;">
+                    <button type="button" class="btn btn--ghost btn--sm" onClick="{{ rep.onChangeImage }}">Add / change image</button>
                     <span class="status-stamp" data-dc-style="background:{{ rep.statusBg }};color:{{ rep.statusColor }};border:1.5px solid {{ rep.statusColor }};padding:5px 11px;">{{ rep.status }}</span>
                     <sc-if value="{{ rep.showOpen }}" hint-placeholder-val="{{ true }}">
                       <button class="btn btn--ghost btn--sm" onClick="{{ rep.onOpen }}">View listing</button>
@@ -5093,7 +5105,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                     <p class="eyebrow eyebrow--light">Handover code &middot; both parties quote this at the desk</p>
                     <p class="code-digits" style="margin-top:8px;">{{ currentConversation.handoverCode }}</p>
                   </div>
-                  <button class="btn btn--flare btn--sm" onClick="{{ completeHandover }}">Mark as returned</button>
+                  <sc-if value="{{ canCompleteHandover }}"><button class="btn btn--flare btn--sm" onClick="{{ completeHandover }}">Mark as returned</button></sc-if>
                 </div>
               </sc-if>
               <sc-if value="{{ currentConversation.isComplete }}" hint-placeholder-val="{{ false }}">
@@ -5106,6 +5118,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
                 <sc-for list="{{ currentConversation.messages }}" as="msg" hint-placeholder-count="3">
                   <div class="chat-bubble" data-dc-style="align-self:{{ msg.align }};background:{{ msg.bg }};color:{{ msg.color }};">
                     {{ msg.text }}
+                    <sc-if value="{{ msg.photo }}"><a href="{{ msg.photo }}" target="_blank" rel="noopener noreferrer"><img src="{{ msg.photo }}" alt="Chat attachment" style="display:block;max-width:240px;width:100%;max-height:240px;object-fit:contain;border-radius:10px;" /></a></sc-if>
                     <small class="mono" style="display:block;margin-top:6px;font-size:9.5px;letter-spacing:.06em;opacity:.68;">{{ msg.time }} <sc-if value="{{ msg.showStatus }}" hint-placeholder-val="{{ false }}">&middot; {{ msg.status }}</sc-if></small>
                   </div>
                 </sc-for>
@@ -5155,12 +5168,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           <div class="form-split">
             <form class="panel" onSubmit="{{ saveProfile }}" style="padding:24px;">
               <div class="profile-header" style="display:flex;align-items:center;gap:17px;margin-bottom:22px;">
-                <sc-if value="{{ profileHasPhoto }}" hint-placeholder-val="{{ true }}">
-                  <span class="profile-photo"><svg class="avatar-photo" viewBox="0 0 1080 1080" role="img" aria-label="Profile photo"><use href="#{{ profilePhotoId }}"></use></svg></span>
-                </sc-if>
-                <sc-if value="{{ profileNoPhoto }}" hint-placeholder-val="{{ false }}">
-                  <image-slot id="profile-avatar" shape="circle" placeholder="Photo" style="width:78px;height:78px;"></image-slot>
-                </sc-if>
+                <div><image-slot id="profile-avatar" shape="circle" src="{{ profilePhoto }}" placeholder="Photo" style="width:78px;height:78px;"></image-slot><div class="image-actions"><button type="button" class="btn btn--ghost btn--sm" data-image-choose="profile-avatar">Change image</button><button type="button" class="btn btn--ghost btn--sm" data-image-clear="profile-avatar">Remove</button></div></div>
                 <div>
                   <strong style="font-size:16px;">{{ profile.name }}</strong>
                   <p class="eyebrow" style="margin-top:5px;">{{ profile.roleLabel }}</p>
@@ -5185,8 +5193,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             <aside style="display:grid;gap:16px;align-content:start;">
               <div class="panel" style="padding:20px;">
                 <p class="eyebrow">Notifications</p>
-                <label style="display:flex;justify-content:space-between;align-items:center;margin-top:15px;font-size:13px;font-weight:600;cursor:pointer;">Email updates<input type="checkbox" defaultChecked="{{ profile.emailNotif }}" style="width:18px;height:18px;accent-color:var(--flare);" /></label>
-                <label style="display:flex;justify-content:space-between;align-items:center;margin-top:13px;font-size:13px;font-weight:600;cursor:pointer;">Push notifications<input type="checkbox" defaultChecked="{{ profile.pushNotif }}" style="width:18px;height:18px;accent-color:var(--flare);" /></label>
+                <label style="display:flex;justify-content:space-between;align-items:center;margin-top:15px;font-size:13px;font-weight:600;cursor:pointer;">Message alerts<input id="message-alerts" type="checkbox" defaultChecked="{{ profile.emailNotif }}" style="width:18px;height:18px;accent-color:var(--flare);" /></label>
+                <label style="display:flex;justify-content:space-between;align-items:center;margin-top:13px;font-size:13px;font-weight:600;cursor:pointer;">Review updates<input id="review-alerts" type="checkbox" defaultChecked="{{ profile.pushNotif }}" style="width:18px;height:18px;accent-color:var(--flare);" /></label>
               </div>
               <div class="panel" style="padding:20px;">
                 <p class="eyebrow">Account</p>
@@ -5225,6 +5233,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             <div style="display:grid;gap:12px;" class="stagger">
               <sc-for list="{{ approvals }}" as="a" hint-placeholder-count="2">
                 <div class="panel admin-action-row">
+                  <sc-if value="{{ a.photo }}"><img class="report-photo" src="{{ a.photo }}" alt="{{ a.title }}" /></sc-if>
                   <div style="min-width:0;">
                     <div style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;">
                       <span class="code">#{{ a.code }}</span>
@@ -6064,6 +6073,7 @@ class Component extends DCLogic {
     this.loginPasswordRef = React.createRef();
     this.signupNameRef = React.createRef();
     this.signupIdRef = React.createRef();
+    this.signupEmailRef = React.createRef();
     this.signupDeptRef = React.createRef();
     this.signupPasswordRef = React.createRef();
     this.signupConfirmRef = React.createRef();
@@ -6917,7 +6927,7 @@ class Component extends DCLogic {
       onGoSignup: this.onGoSignup, onGoLogin: this.onGoLogin, onForgotPassword: this.onForgotPassword,
       login: this.login, signup: this.signup, continueAsGuest: this.continueAsGuest,
       loginIdRef: this.loginIdRef, loginPasswordRef: this.loginPasswordRef,
-      signupNameRef: this.signupNameRef, signupIdRef: this.signupIdRef, signupDeptRef: this.signupDeptRef, signupPasswordRef: this.signupPasswordRef, signupConfirmRef: this.signupConfirmRef,
+      signupEmailRef: this.signupEmailRef, signupNameRef: this.signupNameRef, signupIdRef: this.signupIdRef, signupDeptRef: this.signupDeptRef, signupPasswordRef: this.signupPasswordRef, signupConfirmRef: this.signupConfirmRef,
 
       navItems, exitIconClass: isGuest ? 'icon-enter' : 'icon-power', exitLabel: isGuest ? 'Sign In' : 'Log Out', exitNavClass, onExit: this.onExit,
       pageTitle, pageSubtitle, profileInitials: profile.initials,
@@ -6972,5 +6982,15 @@ class Component extends DCLogic {
   }
 }
 </script>
-</body>
+<script data-image-actions>
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-image-choose],[data-image-clear]');
+    if (!button) return;
+    event.preventDefault();
+    const id = button.dataset.imageChoose || button.dataset.imageClear;
+    const slot = document.getElementById(id);
+    if (!slot) return;
+    if (button.dataset.imageChoose) slot.chooseImage(); else slot.clearImage();
+  });
+  </script></body>
 </html>

@@ -7,9 +7,50 @@ The database migration is in [`supabase/schema.sql`](supabase/schema.sql). It mo
 1. Create a project at <https://database.new>.
 2. Open **SQL Editor** in that project.
 3. Paste all of `supabase/schema.sql` and click **Run** once.
+   Then run the files in `supabase/migrations/` in numeric order. On an existing
+   project that already has migrations 001 and 002, run only
+   [`003_portal_feature_wiring.sql`](supabase/migrations/003_portal_feature_wiring.sql).
 4. In **Authentication > URL Configuration**, set the Site URL to `http://localhost:3000` for local development. Add the production URL later.
 5. In the project's **Connect** dialog, copy the Project URL and publishable key.
 6. Copy `.env.example` to `.env.local` and replace its two placeholders. Never commit `.env.local`.
+
+## Updating an existing deployment
+
+Run migration **003** in Supabase SQL Editor before using the new portal code.
+It installs the atomic report, claim, profile, dispute, and handover functions,
+fixes the claim read policy, persists notification preferences, and adds a
+private `message-photos` bucket for chat attachments. It can be run again safely.
+Existing administrators retain their role; new registrations are students.
+Use the administrator bootstrap SQL below to grant an admin role explicitly.
+
+Add the production URL ending in `/portal-runtime` to **Authentication > URL
+Configuration > Redirect URLs** so password reset emails return to the recovery
+form. Keep email confirmation enabled if you want verified email registration.
+
+Report images are stored in `item-photos`; they appear in My Desk, the admin
+queue, browse cards, and item details. Replacing a published report image as its
+owner sends the report back for approval. Profile photos are resized and stored
+in the existing `profiles.avatar_path` text field as data URLs (maximum 500 KB).
+Message attachments use signed URLs and are visible only to conversation
+participants and administrators. The profile toggles control in-app message
+and review alerts; they do not send email or operating-system push alerts.
+
+## Verification
+
+```bash
+npm run test:database
+npx playwright install chromium
+npm run dev
+# In another terminal:
+npm run test:portal
+npm run lint
+npm run build
+```
+
+Database checks use an isolated PostgreSQL engine with Supabase auth/storage
+stubs. Browser checks use the real portal bundle with a mocked Supabase SDK;
+they do not create or change live accounts or records. Live Supabase/Vercel
+verification remains necessary after applying the migration and deploying.
 
 ## 2. Install the Next.js clients
 

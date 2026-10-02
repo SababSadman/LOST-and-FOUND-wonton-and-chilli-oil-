@@ -8,7 +8,7 @@
 function buildConfigScript(url: string, key: string) {
   return (
     '<script data-portal-config>window.__PORTAL_ENV__=' +
-    JSON.stringify({ url, key }) +
+    JSON.stringify({ url, key }).replace(/</g, '\\u003c') +
     ';</script>'
   );
 }
@@ -17,7 +17,7 @@ const DATA_LAYER = String.raw`
 <script data-portal-supabase>
 (() => {
   const env = window.__PORTAL_ENV__ || {};
-  if (!env.url || !env.key || !window.supabase) {
+  if (!env.url || !env.key || env.url.includes('YOUR_PROJECT_REF') || env.key.includes('REPLACE_ME') || !window.supabase) {
     window.__PORTAL_DATA__ = null;
     return;
   }
@@ -48,44 +48,46 @@ const DATA_LAYER = String.raw`
       return data.user || null;
     },
 
-    // Open access: sign in, and register the account if it does not exist yet.
-    async signIn(email, password, desiredRole) {
+    // Signing in must never create an account or overwrite an existing profile.
+    async signIn(email, password) {
       const creds = { email: String(email || '').trim(), password: String(password || '') };
       if (!creds.email || !creds.password) throw new Error('Enter an email and password.');
 
-      let res = await db.auth.signInWithPassword(creds);
-      if (res.error) {
-        const made = await db.auth.signUp({
-          ...creds,
-          options: { data: { full_name: creds.email.split('@')[0], role: desiredRole } },
-        });
-        if (made.error) throw made.error;
-        res = made.data.session ? { data: made.data } : await db.auth.signInWithPassword(creds);
-        if (res.error) throw res.error;
-        if (!res.data || !res.data.user) {
-          throw new Error('Account made, but it needs email confirmation. Turn off "Confirm email" in Supabase > Authentication > Sign In / Providers > Email.');
-        }
-      }
+      const res = await db.auth.signInWithPassword(creds);
+      if (res.error) throw res.error;
 
-      // The role comes from the signup trigger's metadata; it is not in the
-      // profiles column grant, so it cannot be reassigned from the client.
-      // An existing account keeps whatever role it was created with.
+      // Roles are read from the existing profile. New accounts are students;
+      // administrators are assigned explicitly by the database owner.
       this.userId = res.data.user.id;
       return res.data.user;
     },
 
+    async signUp(email, password, name, department, studentId) {
+      const { data, error } = await db.auth.signUp({
+        email: email.trim(), password,
+        options: { data: { full_name: name.trim(), department: department.trim(), student_id: studentId.trim(), role: 'student' } },
+      });
+      if (error) throw error;
+      this.userId = data.session ? data.user.id : null;
+      return data.session ? data.user : null;
+    },
+
     async signOut() {
-      await db.auth.signOut();
+      const { error } = await db.auth.signOut();
+      if (error) throw error;
       this.userId = null;
       this.role = 'guest';
     },
 
     async loadProfile(userId) {
-      const [{ data: pub }, { data: priv }] = await Promise.all([
-        db.from('profiles').select('full_name, department, role').eq('id', userId).maybeSingle(),
+      const [pubRes, privRes] = await Promise.all([
+        db.from('profiles').select('full_name, department, role, avatar_path, notification_preferences').eq('id', userId).maybeSingle(),
         db.from('profile_private').select('student_id, phone').eq('user_id', userId).maybeSingle(),
       ]);
-      if (!pub) return null;
+      if (pubRes.error) throw pubRes.error;
+      if (privRes.error) throw privRes.error;
+      const pub = pubRes.data, priv = privRes.data;
+      if (!pub) throw new Error('Your profile is missing. Please contact the portal administrator.');
       this.role = pub.role === 'admin' ? 'admin' : 'student';
       return {
         name: pub.full_name,
@@ -94,15 +96,17 @@ const DATA_LAYER = String.raw`
         idValue: (priv && priv.student_id) || '—',
         dept: pub.department,
         phone: (priv && priv.phone) || '',
-        emailNotif: true,
-        pushNotif: true,
+        emailNotif: !pub.notification_preferences || pub.notification_preferences.messages !== false,
+        pushNotif: !pub.notification_preferences || pub.notification_preferences.reviews !== false,
         initials: initials(pub.full_name),
+        photo: pub.avatar_path && pub.avatar_path.startsWith('data:image/') ? pub.avatar_path : '',
       };
     },
 
     async signedPhoto(path) {
       if (!path) return '';
-      const { data } = await db.storage.from('item-photos').createSignedUrl(path, 3600);
+      const { data, error } = await db.storage.from('item-photos').createSignedUrl(path, 3600);
+      if (error) { console.warn('Could not load item photo:', error.message); return ''; }
       return (data && data.signedUrl) || '';
     },
 
@@ -136,12 +140,14 @@ const DATA_LAYER = String.raw`
           description: row.description,
           hiddenDetail: (hidden && hidden.hidden_detail) || '',
           photo: await this.signedPhoto(row.photo_path),
+          photoPath: row.photo_path,
+          approvalStatus: row.approval_status,
           mine: !!(userId && row.reporter_id === userId),
         };
         if (row.approval_status === 'approved') {
           items.push({ ...shared, status: STATUS[row.status] || 'Open',
             reporter: (rep && rep.full_name) || 'UIU Community' });
-        } else if (row.approval_status === 'pending') {
+        } else if (row.approval_status === 'pending' || (row.approval_status === 'rejected' && shared.mine)) {
           approvals.push({ ...shared, submittedBy: (rep && rep.full_name) || 'UIU User' });
         }
       }
@@ -156,6 +162,8 @@ const DATA_LAYER = String.raw`
         db.from('activity_log').select('event_code,action,detail,created_at').order('created_at', { ascending: false }).limit(20),
       ]);
       if (claimRes.error) throw claimRes.error;
+      if (noteRes.error) throw noteRes.error;
+      if (actRes.error) throw actRes.error;
 
       const rows = claimRes.data || [];
       const verdict = { approved: 'Approved', rejected: 'Rejected', returned: 'Returned' };
@@ -208,9 +216,15 @@ const DATA_LAYER = String.raw`
     async loadConversations(userId) {
       const { data, error } = await db
         .from('conversations')
-        .select('id, claim_id, updated_at, item:items!conversations_item_id_fkey(title), claim:claims!conversations_claim_id_fkey(claimant_id), handover:handovers(id, pin_code, status, location), messages(id, sender_id, body, created_at)')
+        .select('id, item_id, claim_id, updated_at, item:items!conversations_item_id_fkey(title), claim:claims!conversations_claim_id_fkey(claimant_id), handover:handovers(id, pin_code, status, location, scheduled_for), messages(id, sender_id, body, read_at, created_at)')
         .order('updated_at', { ascending: false });
       if (error) throw error;
+
+      const photos = {};
+      await Promise.all((data || []).flatMap((conv) => (conv.messages || []).filter((m) => m.body.startsWith('image:')).map(async (m) => {
+        const { data: photo } = await db.storage.from('message-photos').createSignedUrl(m.body.slice(6), 3600);
+        photos[m.id] = photo ? photo.signedUrl : '';
+      })));
 
       return (data || []).map((c) => {
         const item = first(c.item);
@@ -223,24 +237,26 @@ const DATA_LAYER = String.raw`
         return {
           id: c.id,
           claimId: c.claim_id,
+          itemId: c.item_id,
           handoverId: ho ? ho.id : null,
           itemTitle: title,
           name: (claim && claim.claimant_id === userId ? 'Finder · ' : 'Claimant · ') + title,
           avatar: initials(title),
-          unread: false,
-          lastMessage: last ? last.body : 'Handover approved. Agree a time and confirm.',
+          unread: msgs.some((m) => m.sender_id !== userId && !m.read_at),
+          lastMessage: last ? (last.body.startsWith('image:') ? 'Photo attachment' : last.body) : 'Handover approved. Agree a time and confirm.',
           time: new Date(last ? last.created_at : c.updated_at)
             .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           handover: ho ? {
-            text: ho.location + ' — agree a time with the other participant',
+            text: ho.location + ' — ' + (ho.scheduled_for ? new Date(ho.scheduled_for).toLocaleString() : 'agree a time with the other participant'),
             status: ho.status === 'cancelled' ? 'proposed' : ho.status,
             code: ho.pin_code,
           } : undefined,
           messages: msgs.map((m) => ({
             mine: m.sender_id === userId,
-            text: m.body,
+            text: m.body.startsWith('image:') ? (photos[m.id] ? '' : 'Photo unavailable') : m.body,
+            photo: photos[m.id] || '',
             time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            status: m.sender_id === userId ? 'Sent' : undefined,
+            status: m.sender_id === userId ? (m.read_at ? 'Seen' : 'Sent') : undefined,
           })),
         };
       });
@@ -250,7 +266,18 @@ const DATA_LAYER = String.raw`
       const { error } = await db.from('messages')
         .insert({ conversation_id: conversationId, sender_id: userId, body: body.trim() });
       if (error) throw error;
-      await db.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversationId);
+      // updated_at is maintained by the message trigger for both participants.
+    },
+
+    async sendPhoto(conversationId, file, userId) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5242880) throw new Error('Choose a JPEG, PNG, or WebP image under 5 MB.');
+      try { const image = await createImageBitmap(file); image.close(); } catch { throw new Error('This image cannot be opened. Choose another file.'); }
+      const path = userId + '/' + conversationId + '/' + crypto.randomUUID() + '.' + file.type.split('/')[1];
+      const bucket = db.storage.from('message-photos');
+      const { error } = await bucket.upload(path, file, { contentType: file.type, upsert: false });
+      if (error) throw error;
+      try { await this.sendMessage(conversationId, 'image:' + path, userId); }
+      catch (error) { await bucket.remove([path]); throw error; }
     },
 
     // A participant may only move proposed -> confirmed; the guard trigger
@@ -262,11 +289,8 @@ const DATA_LAYER = String.raw`
     },
 
     async completeHandover(handoverId, claimId, itemId) {
-      const { error } = await db.from('handovers')
-        .update({ status: 'complete' }).eq('id', handoverId);
+      const { error } = await db.rpc('portal_complete_handover', { handover_id: handoverId });
       if (error) throw error;
-      await db.from('claims').update({ status: 'returned' }).eq('id', claimId);
-      if (itemId) await db.from('items').update({ status: 'resolved' }).eq('id', itemId);
     },
 
     // Disputes are keyed by item; the UI groups the competing claimants itself.
@@ -276,15 +300,16 @@ const DATA_LAYER = String.raw`
         .select('id, item_id, status, reason, item:items!disputes_item_id_fkey(title, category:categories(code))')
         .eq('status', 'open')
         .order('created_at', { ascending: false });
-      if (error) return [];
+      if (error) throw error;
 
       const rows = data || [];
       if (!rows.length) return [];
       const ids = rows.map((d) => d.item_id);
-      const { data: claims } = await db
+      const { data: claims, error: claimError } = await db
         .from('claims')
-        .select('item_id, created_at, claimant:profiles!claims_claimant_id_fkey(full_name), evidence:claim_evidence(identifying_feature, proof)')
+        .select('id, item_id, status, created_at, claimant:profiles!claims_claimant_id_fkey(full_name), evidence:claim_evidence(identifying_feature, proof)')
         .in('item_id', ids);
+      if (claimError) throw claimError;
 
       return rows.map((d) => {
         const item = first(d.item);
@@ -297,6 +322,7 @@ const DATA_LAYER = String.raw`
           claimants: mine.map((c) => {
             const ev = first(c.evidence);
             return {
+              claimId: c.id,
               name: (first(c.claimant) || {}).full_name || 'UIU User',
               answer: ev ? (ev.identifying_feature + ' ' + ev.proof).trim() : '—',
               date: new Date(c.created_at).toLocaleDateString('en-GB'),
@@ -306,7 +332,12 @@ const DATA_LAYER = String.raw`
       });
     },
 
-    async resolveDispute(disputeId, adminId, escalatedTo) {
+    async resolveDispute(disputeId, adminId, escalatedTo, claimId) {
+      if (!escalatedTo) {
+        const { error } = await db.rpc('portal_award_dispute', { dispute_id: disputeId, winning_claim_id: claimId });
+        if (error) throw error;
+        return;
+      }
       const patchRow = {
         status: escalatedTo ? 'escalated' : 'resolved',
         resolved_by: adminId,
@@ -318,14 +349,30 @@ const DATA_LAYER = String.raw`
     },
 
     async uploadPhoto(dataUrl, itemId, userId) {
-      if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+      if (!dataUrl) return null;
+      if (!/^data:image\/(jpeg|png|webp);base64,/i.test(dataUrl)) throw new Error('Choose a JPEG, PNG, or WebP image.');
       const blob = await (await fetch(dataUrl)).blob();
+      if (blob.size > 5242880) throw new Error('Choose an image smaller than 5 MB.');
+      try { const image = await createImageBitmap(blob); image.close(); } catch { throw new Error('This image cannot be opened. Choose another file.'); }
       const ext = (blob.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
-      const path = userId + '/' + itemId + '/photo.' + ext;
+      const path = userId + '/' + itemId + '/' + crypto.randomUUID() + '.' + ext;
       const { error } = await db.storage.from('item-photos')
-        .upload(path, blob, { contentType: blob.type, upsert: true });
+        .upload(path, blob, { contentType: blob.type, upsert: false });
       if (error) throw error;
       return path;
+    },
+
+    async changeItemPhoto(item, dataUrl, userId) {
+      const path = await this.uploadPhoto(dataUrl, item.id, userId);
+      try {
+        const { error } = await db.rpc('portal_change_item_photo', { target_item_id: item.id, new_photo_path: path });
+        if (error) throw error;
+      } catch (error) {
+        if (path) await db.storage.from('item-photos').remove([path]);
+        throw error;
+      }
+      // Old URLs stay valid until their expiry; replacing uses a fresh object.
+      if (item.photoPath && item.photoPath.startsWith(userId + '/')) await db.storage.from('item-photos').remove([item.photoPath]);
     },
 
     async createItem({ type, title, categoryName, location, date, description, hidden, photo, categories, userId }) {
@@ -336,16 +383,10 @@ const DATA_LAYER = String.raw`
       let path = null;
       try {
         path = await this.uploadPhoto(photo, id, userId);
-        const ins = await db.from('items').insert({
-          id, reporter_id: userId, category_id: cat.id, type,
-          title: title.trim(), description: description.trim(),
-          location: location.trim(), occurred_on: date || new Date().toISOString().slice(0, 10),
-          photo_path: path,
-        });
-        if (ins.error) throw ins.error;
-        const det = await db.from('item_private_details')
-          .insert({ item_id: id, reporter_id: userId, hidden_detail: hidden.trim() });
-        if (det.error) throw det.error;
+        const { error } = await db.rpc('portal_create_item', { item_id: id, category_id: cat.id, item_type: type,
+          item_title: title.trim(), item_description: description.trim(), item_location: location.trim(),
+          item_date: date, item_photo_path: path, item_hidden_detail: hidden.trim() });
+        if (error) throw error;
         return id;
       } catch (err) {
         if (path) await db.storage.from('item-photos').remove([path]);
@@ -354,15 +395,10 @@ const DATA_LAYER = String.raw`
     },
 
     async createClaim({ itemId, kind, feature, proof, contact, userId }) {
-      const { data, error } = await db.from('claims')
-        .insert({ item_id: itemId, claimant_id: userId, kind }).select('id').single();
+      const { data, error } = await db.rpc('portal_create_claim', { target_item_id: itemId, claim_kind: kind,
+        feature: feature.trim(), claim_proof: proof.trim(), contact: contact.trim() });
       if (error) throw error;
-      const ev = await db.from('claim_evidence').insert({
-        claim_id: data.id, claimant_id: userId,
-        identifying_feature: feature.trim(), proof: proof.trim(), contact_phone: contact.trim(),
-      });
-      if (ev.error) throw ev.error;
-      return data.id;
+      return data;
     },
 
     async decideItem(itemId, approved, adminId) {
@@ -375,20 +411,9 @@ const DATA_LAYER = String.raw`
     },
 
     async approveClaim(claimId, itemId, adminId) {
-      const upd = await db.from('claims').update({
-        status: 'approved', reviewed_by: adminId, reviewed_at: new Date().toISOString(),
-      }).eq('id', claimId);
-      if (upd.error) throw upd.error;
-
-      const conv = await db.from('conversations')
-        .insert({ claim_id: claimId, item_id: itemId }).select('id').single();
-      if (conv.error) throw conv.error;
-
-      const pin = String(1000 + Math.floor(Math.random() * 9000));
-      const ho = await db.from('handovers')
-        .insert({ claim_id: claimId, conversation_id: conv.data.id, pin_code: pin });
-      if (ho.error) throw ho.error;
-      return pin;
+      const { data, error } = await db.rpc('portal_approve_claim', { target_claim_id: claimId });
+      if (error) throw error;
+      return data;
     },
 
     async rejectClaim(claimId, adminId) {
@@ -402,7 +427,7 @@ const DATA_LAYER = String.raw`
     async addCategory(name) {
       const { error } = await db.from('categories').insert({
         name: name.trim(),
-        code: name.replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase(),
+        code: 'C' + crypto.randomUUID().replace(/-/g, '').slice(0, 7).toUpperCase(),
       });
       if (error) throw error;
     },
@@ -412,19 +437,18 @@ const DATA_LAYER = String.raw`
       if (error) throw error;
     },
 
-    async saveProfile(userId, name, dept, phone) {
-      const [a, b] = await Promise.all([
-        db.from('profiles').update({ full_name: name.trim(), department: dept.trim() }).eq('id', userId),
-        db.from('profile_private').update({ phone: phone.trim() || null }).eq('user_id', userId),
-      ]);
-      if (a.error) throw a.error;
-      if (b.error) throw b.error;
+    async saveProfile(userId, name, dept, phone, photo, preferences) {
+      if (photo && (!/^data:image\/(jpeg|png|webp);base64,/i.test(photo) || photo.length > 700000)) throw new Error('Choose a smaller profile image (under 500 KB).');
+      const { error } = await db.rpc('portal_save_profile', { profile_name: name.trim(), profile_department: dept.trim(),
+        profile_phone: phone.trim() || null, profile_avatar: photo || null, profile_preferences: preferences || { messages: true, reviews: true } });
+      if (error) throw error;
     },
 
     async markNotificationsRead(userId) {
-      await db.from('notifications')
+      const { error } = await db.from('notifications')
         .update({ read_at: new Date().toISOString() })
         .eq('user_id', userId).is('read_at', null);
+      if (error) throw error;
     },
   };
 
@@ -438,7 +462,6 @@ const OVERRIDES = String.raw`
 <script data-portal-overrides>
 (() => {
   const Data = window.__PORTAL_DATA__;
-  if (!Data) return;
 
   // The dc runtime keeps the logic object on the wrapper component as .logic
   // (state lives there; setState proxies through __host). It is not a fiber
@@ -476,15 +499,28 @@ const OVERRIDES = String.raw`
     const toast = (m) => app.showToast(m);
     const fail = (e) => toast((e && e.message) || 'Something went wrong.');
 
+    if (!Data) {
+      const unavailable = (event) => { if (event && event.preventDefault) event.preventDefault(); toast('The portal database is not configured. Please contact the administrator.'); };
+      for (const name of ['login', 'signup', 'submitLostForm', 'submitFoundForm', 'submitClaim', 'saveProfile', 'onForgotPassword']) app[name] = unavailable;
+      app.continueAsGuest = () => app.setState({ authed: true, role: 'guest', view: 'browse' });
+      app.setState({ authed: false, role: 'guest', items: [], approvals: [], claims: [], claimReviews: [], notifications: [], activity: [], conversations: [], disputes: [], categories: [], profileStudent: {}, profileAdmin: {} });
+      return;
+    }
+
     // Pull everything the current identity is allowed to see.
     app.refreshAll = async function () {
       try {
         const uid = Data.userId;
+        if (uid && app.state.view === 'messages' && app.state.activeConversationId) {
+          const { error } = await Data.db.rpc('portal_read_conversation', { target_conversation_id: app.state.activeConversationId });
+          if (error) throw error;
+        }
         const portal = await Data.loadPortal(uid);
         const patchObj = {
           categories: portal.categories,
           items: portal.items,
           approvals: portal.approvals,
+          ...(uid ? {} : { claims: [], claimReviews: [], notifications: [], activity: [], conversations: [], disputes: [], activeConversationId: '' }),
         };
         if (uid) {
           const [mine, convos] = await Promise.all([
@@ -502,8 +538,9 @@ const OVERRIDES = String.raw`
         // Keep a selection that exists, or the template's find() falls through.
         const ids = patchObj.items.map((i) => i.id);
         if (!ids.includes(app.state.selectedItemId)) patchObj.selectedItemId = ids[0];
+        if (Data.userId !== uid) return;
         await setS(patchObj);
-      } catch (e) { fail(e); }
+      } catch (e) { fail(e); throw e; }
     };
 
     app.login = async function (e) {
@@ -513,6 +550,7 @@ const OVERRIDES = String.raw`
       const pass = app.loginPasswordRef.current ? app.loginPasswordRef.current.value : '';
       try {
         const user = await Data.signIn(email, pass, role);
+        customElements.get('image-slot').clearDraftImages();
         const profile = await Data.loadProfile(user.id);
         const patchObj = { authed: true, role: Data.role,
           view: Data.role === 'admin' ? 'admin' : 'dashboard' };
@@ -535,16 +573,16 @@ const OVERRIDES = String.raw`
       const confirm = app.signupConfirmRef.current.value;
       if (pass.length < 8) return toast('Use at least 8 characters for your password.');
       if (pass !== confirm) return toast('The passwords do not match.');
-      const role = app.state.authRoleTab;
       const idField = app.signupIdRef.current ? app.signupIdRef.current.value.trim() : '';
-      const email = idField.includes('@') ? idField : '';
-      if (!email) return toast('Enter your email address in the ID field to register.');
+      const email = app.signupEmailRef.current ? app.signupEmailRef.current.value.trim() : '';
+      if (!email || !idField) return toast('Enter your email address and student ID.');
       try {
-        const user = await Data.signIn(email, pass, role);
         const name = app.signupNameRef.current ? app.signupNameRef.current.value.trim() : '';
         const dept = app.signupDeptRef.current ? app.signupDeptRef.current.value.trim() : '';
-        if (name || dept) {
-          await Data.saveProfile(user.id, name || email.split('@')[0], dept || 'Not specified', '');
+        const user = await Data.signUp(email, pass, name, dept, idField);
+        if (!user) {
+          await setS({ authed: false, authMode: 'login' });
+          return toast('Check your email to confirm your account, then sign in.');
         }
         const profile = await Data.loadProfile(user.id);
         const patchObj = { authed: true, role: Data.role,
@@ -557,17 +595,23 @@ const OVERRIDES = String.raw`
     };
 
     app.continueAsGuest = async function () {
-      Data.userId = null; Data.role = 'guest';
-      await setS({ authed: true, role: 'guest', view: 'browse' });
-      await app.refreshAll();
+      try {
+        await Data.signOut();
+        customElements.get('image-slot').clearDraftImages();
+        Data.userId = null; Data.role = 'guest';
+        await setS({ authed: true, role: 'guest', view: 'browse', profileStudent: {}, profileAdmin: {} });
+        await app.refreshAll();
+      } catch (error) { fail(error); }
     };
 
     app.onExit = async function () {
       const wasGuest = app.state.role === 'guest';
-      await Data.signOut();
+      try { await Data.signOut(); } catch (error) { return fail(error); }
+      customElements.get('image-slot').clearDraftImages();
       await setS({ authed: false, authMode: 'login', view: 'dashboard',
-        claims: [], claimReviews: [], notifications: [] });
-      await app.refreshAll();
+        role: 'guest', claims: [], claimReviews: [], notifications: [], conversations: [], disputes: [],
+        profileStudent: {}, profileAdmin: {}, activeConversationId: '' });
+      try { await app.refreshAll(); } catch { return; }
       if (!wasGuest) toast('Signed out.');
     };
 
@@ -589,18 +633,23 @@ const OVERRIDES = String.raw`
       if (!title || !categoryName || !location || !description || !hidden) return;
       if (!Data.userId) return toast('Please sign in before filing a report.');
       const slot = document.getElementById(p.slot);
+      if (slot && slot.imageLoading) return toast('Wait for the image to finish loading.');
+      if (app._submittingItem) return;
+      app._submittingItem = true;
+      const form = e.target;
       try {
         await Data.createItem({
           type, title, categoryName, location, date: p.d.current.value,
           description, hidden,
-          photo: slot ? slot.getAttribute('src') || '' : '',
+          photo: slot ? slot.imageSource : '',
           categories: app.state.categories, userId: Data.userId,
         });
+        form.reset();
+        if (slot) slot.clearImage();
         await setS({ view: 'claims', deskTab: 'reports', lostDescriptionCount: 0, lostPrivateCount: 0 });
         await app.refreshAll();
-        e.target.reset();
         toast(type === 'lost' ? 'Lost report sent for admin approval.' : 'Sent to the admin approval queue.');
-      } catch (err) { fail(err); }
+      } catch (err) { fail(err); } finally { app._submittingItem = false; }
     }
 
     app.submitClaim = async function (e) {
@@ -612,14 +661,19 @@ const OVERRIDES = String.raw`
       const contact = app.claimContactRef.current.value;
       if (!feature || !proof || !contact) return;
       if (!Data.userId) return toast('Please sign in before making a claim.');
+      if (item.mine) return toast('You cannot claim your own report.');
+      if (item.status === 'Resolved') return toast('This item has already been returned.');
+      if (app._submittingClaim) return;
+      app._submittingClaim = true;
+      const form = e.target;
       const kind = item.type === 'found' ? 'ownership' : 'recovery';
       try {
         await Data.createClaim({ itemId: item.id, kind, feature, proof, contact, userId: Data.userId });
+        form.reset();
         await setS({ showClaimForm: false, view: 'claims', deskTab: 'claims' });
         await app.refreshAll();
-        e.target.reset();
         toast(kind === 'ownership' ? 'Claim submitted for admin verification.' : 'Found report sent to the admin desk.');
-      } catch (err) { fail(err); }
+      } catch (err) { fail(err); } finally { app._submittingClaim = false; }
     };
 
     app.approveApproval = async function (id) {
@@ -684,6 +738,23 @@ const OVERRIDES = String.raw`
       } catch (err) { if (input) input.value = text; fail(err); }
     };
 
+    app.selectConversation = async function (id) {
+      await setS({ activeConversationId: id });
+      try { await app.refreshAll(); } catch (error) { fail(error); }
+    };
+
+    app.onAttach = function () {
+      const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
+      if (!conv || !Data.userId) return toast('Open an approved conversation first.');
+      const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp';
+      input.onchange = async () => {
+        if (!input.files[0]) return;
+        try { await Data.sendPhoto(conv.id, input.files[0], Data.userId); await app.refreshAll(); toast('Image sent.'); }
+        catch (error) { fail(error); }
+      };
+      input.click();
+    };
+
     app.confirmHandover = async function () {
       const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
       if (!conv || !conv.handoverId) return toast('No handover to confirm yet.');
@@ -694,15 +765,35 @@ const OVERRIDES = String.raw`
       } catch (err) { fail(err); }
     };
 
+    app.rescheduleHandover = function () {
+      const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
+      if (!conv || !conv.handoverId) return toast('No handover to reschedule yet.');
+      const dialog = document.createElement('dialog');
+      dialog.style.cssText = 'margin:auto;padding:28px;border:0;border-radius:18px;max-width:420px;width:90%;';
+      dialog.innerHTML = '<form style="display:grid;gap:14px"><h2>Reschedule handover</h2><label>New date and time<input class="inp" name="time" type="datetime-local" required></label><p role="status"></p><button class="btn btn--flare" type="submit">Propose time</button><button class="btn btn--ghost" type="button">Cancel</button></form>';
+      dialog.querySelector('[type=button]').onclick = () => { dialog.close(); dialog.remove(); };
+      dialog.querySelector('form').onsubmit = async (event) => {
+        event.preventDefault();
+        const time = new Date(event.target.elements.time.value);
+        const message = dialog.querySelector('[role=status]');
+        if (isNaN(time) || time <= new Date()) { message.textContent = 'Choose a future date and time.'; return; }
+        try {
+          const { error } = await Data.db.rpc('portal_reschedule_handover', { target_handover_id: conv.handoverId, new_time: time.toISOString() });
+          if (error) throw error;
+          dialog.close(); dialog.remove(); await app.refreshAll(); toast('New handover time proposed. Confirm it with the other participant.');
+        } catch (error) { message.textContent = error.message; }
+      };
+      document.body.appendChild(dialog); dialog.showModal();
+    };
+
     app.completeHandover = async function () {
       const conv = app.state.conversations.find((c) => c.id === app.state.activeConversationId);
       if (!conv || !conv.handoverId) return;
       if (Data.role !== 'admin') {
         return toast('Only the desk can close a handover. Show your code at Student Affairs.');
       }
-      const claim = app.state.claims.find((c) => c.id === conv.claimId);
       try {
-        await Data.completeHandover(conv.handoverId, conv.claimId, claim ? claim.itemId : null);
+        await Data.completeHandover(conv.handoverId, conv.claimId, conv.itemId);
         await app.refreshAll();
         toast('Handover complete. Case closed.');
       } catch (err) { fail(err); }
@@ -710,7 +801,10 @@ const OVERRIDES = String.raw`
 
     app.awardDispute = async function (disputeId, claimantName) {
       try {
-        await Data.resolveDispute(disputeId, Data.userId, null);
+        const dispute = app.state.disputes.find((d) => d.id === disputeId);
+        const claimants = dispute ? dispute.claimants.filter((c) => c.name === claimantName) : [];
+        if (claimants.length !== 1) return toast('Choose a unique claimant before awarding this dispute.');
+        await Data.resolveDispute(disputeId, Data.userId, null, claimants[0].claimId);
         await app.refreshAll();
         toast('Awarded to ' + claimantName + '.');
       } catch (err) { fail(err); }
@@ -733,16 +827,75 @@ const OVERRIDES = String.raw`
       } catch (err) { fail(err); }
     };
 
+    app.openNotification = async function (note) {
+      try {
+        const { error } = await Data.db.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', note.id).eq('user_id', Data.userId);
+        if (error) throw error;
+        const views = ['dashboard', 'browse', 'claims', 'messages', 'notifications', 'profile', 'admin'];
+        await setS({ notifications: app.state.notifications.map((n) => n.id === note.id ? { ...n, unread: false } : n),
+          view: views.includes(note.goTo) && (note.goTo !== 'admin' || Data.role === 'admin') ? note.goTo : app.state.view });
+      } catch (error) { fail(error); }
+    };
+
+    app.changeItemImage = function (itemId) {
+      const item = [...app.state.items, ...app.state.approvals].find((i) => i.id === itemId);
+      if (!item || (!item.mine && Data.role !== 'admin')) return;
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp';
+      input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+        try {
+          if (file.size > 5242880) throw new Error('Choose an image smaller than 5 MB.');
+          const source = await new Promise((resolve, reject) => {
+            const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Could not read the image.')); reader.readAsDataURL(file);
+          });
+          await Data.changeItemPhoto(item, source, Data.userId);
+          await app.refreshAll(); toast(item.approvalStatus === 'approved' && Data.role !== 'admin' ? 'Image changed. Your report is queued for review again.' : 'Image updated.');
+        } catch (error) { fail(error); }
+      };
+      input.click();
+    };
+
+    const render = app.renderVals.bind(app);
+    app.renderVals = function () {
+      const vals = render();
+      vals.myReports = vals.myReports.map((row) => {
+        const item = [...app.state.approvals, ...app.state.items].find((i) => row.key === 'a' + i.id || row.key === 'i' + i.id);
+        return { ...row, photo: item ? item.photo : '', hasPhoto: !!(item && item.photo),
+          status: item && item.approvalStatus === 'rejected' ? 'Rejected' : row.status,
+          matchNote: item && item.approvalStatus === 'rejected' ? 'Update the image to submit this report for review again.' : row.matchNote,
+          onChangeImage: () => app.changeItemImage(item && item.id) };
+      });
+      vals.approvals = vals.approvals.filter((a) => a.approvalStatus !== 'rejected');
+      vals.noApprovals = vals.approvals.length === 0;
+      vals.canChangeItemImage = !!(vals.currentItem && vals.currentItem.id && (vals.currentItem.mine && vals.currentItem.status !== 'Resolved' || Data.role === 'admin'));
+      vals.onChangeItemImage = () => app.changeItemImage(app.state.selectedItemId);
+      vals.profilePhoto = app.currentProfile().photo || '';
+      vals.profileHasUploadedPhoto = !!vals.profilePhoto;
+      vals.profileNoUploadedPhoto = !vals.profilePhoto;
+      vals.profileHasIllustration = vals.profileHasPhoto && !vals.profilePhoto;
+      vals.profileShowInitials = vals.profileNoPhoto && !vals.profilePhoto;
+      vals.filteredItems = vals.filteredItems.map((item) => ({ ...item, noPhoto: !item.photo }));
+      vals.currentItem.noPhoto = !vals.currentItem.photo;
+      vals.canCompleteHandover = Data.role === 'admin';
+      return vals;
+    };
+
     if (typeof app.saveProfile === 'function') {
       app.saveProfile = async function (e) {
         if (e && e.preventDefault) e.preventDefault();
         if (!Data.userId) return toast('Sign in to update your profile.');
         try {
+          const avatar = document.getElementById('profile-avatar');
+          if (avatar && avatar.imageLoading) return toast('Wait for the profile image to finish loading.');
           await Data.saveProfile(
             Data.userId,
             app.profileNameRef.current ? app.profileNameRef.current.value : '',
             app.profileDeptRef.current ? app.profileDeptRef.current.value : '',
             app.profilePhoneRef.current ? app.profilePhoneRef.current.value : '',
+            document.getElementById('profile-avatar') ? document.getElementById('profile-avatar').imageSource : undefined,
+            { messages: document.getElementById('message-alerts').checked, reviews: document.getElementById('review-alerts').checked },
           );
           const profile = await Data.loadProfile(Data.userId);
           if (profile) await setS(Data.role === 'admin' ? { profileAdmin: profile } : { profileStudent: profile });
@@ -751,11 +904,44 @@ const OVERRIDES = String.raw`
       };
     }
 
+    app.onForgotPassword = async function () {
+      const email = app.loginIdRef.current ? app.loginIdRef.current.value.trim() : '';
+      if (!email) return toast('Enter your email address first.');
+      const { error } = await Data.db.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + '/portal-runtime' });
+      if (error) return fail(error);
+      toast('Check your email for the password reset link.');
+    };
+
+    app.messageReporter = function () {
+      const conv = app.state.conversations.find((c) => c.itemId === app.state.selectedItemId);
+      if (!conv) return toast('A conversation opens after the desk approves your claim.');
+      app.setState({ view: 'messages', activeConversationId: conv.id });
+    };
+
+    Data.db.auth.onAuthStateChange((event) => {
+      if (event !== 'PASSWORD_RECOVERY') return;
+      setTimeout(() => {
+        const dialog = document.createElement('dialog');
+        dialog.style.cssText = 'margin:auto;padding:28px;border:0;border-radius:18px;max-width:420px;width:90%;';
+        dialog.innerHTML = '<form style="display:grid;gap:14px"><h2>Set a new password</h2><label>New password<input class="inp" name="password" type="password" autocomplete="new-password" minlength="8" required></label><label>Confirm password<input class="inp" name="confirm" type="password" autocomplete="new-password" minlength="8" required></label><p role="status"></p><button class="btn btn--flare" type="submit">Save password</button></form>';
+        dialog.querySelector('form').onsubmit = async (event) => {
+          event.preventDefault();
+          const form = event.target, message = dialog.querySelector('[role=status]');
+          if (form.elements.password.value !== form.elements.confirm.value) { message.textContent = 'The passwords do not match.'; return; }
+          const { error } = await Data.db.auth.updateUser({ password: form.elements.password.value });
+          if (error) { message.textContent = error.message; return; }
+          dialog.close(); dialog.remove(); toast('Password updated.');
+        };
+        document.body.appendChild(dialog); dialog.showModal();
+      }, 0);
+    });
+
     // Start from a clean slate: drop the bundle's demo rows, then load real data.
     (async () => {
-      const user = await Data.currentUser();
       const blank = { items: [], approvals: [], claims: [], claimReviews: [],
         notifications: [], activity: [], conversations: [], disputes: [] };
+      await setS(blank);
+      const user = await Data.currentUser();
       if (user) {
         Data.userId = user.id;
         const profile = await Data.loadProfile(user.id);
@@ -766,7 +952,15 @@ const OVERRIDES = String.raw`
         await setS({ ...blank, authed: false, authMode: 'login', role: 'guest' });
       }
       await app.refreshAll();
-    })();
+    })().catch(fail);
+
+    // Keep chats, review decisions, and expiring signed photo URLs current.
+    let refreshing = false;
+    setInterval(async () => {
+      if (document.hidden || refreshing || !app.state.authed || app._submittingItem || app._submittingClaim) return;
+      refreshing = true;
+      try { await app.refreshAll(); } catch {} finally { refreshing = false; }
+    }, 30000);
   };
 
   let tries = 0;
