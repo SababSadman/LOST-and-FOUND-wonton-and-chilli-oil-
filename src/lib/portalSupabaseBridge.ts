@@ -857,6 +857,39 @@ const OVERRIDES = String.raw`
       input.click();
     };
 
+    // Reference photos (public/stock) for listings without an upload: match the title first, then the category.
+    const STOCK_BY_WORD = [
+      [['earbud', 'airpod', 'buds'], ['earbuds']],
+      [['headphone', 'headset'], ['headphones']],
+      [['charger', 'adapter', 'power bank', 'cable'], ['charger']],
+      [['calculator'], ['calculator']],
+      [['laptop', 'macbook'], ['laptop']],
+      [['phone', 'mobile'], ['phone']],
+      [['watch'], ['watch']],
+      [['wallet', 'purse'], ['wallet']],
+      [['id card', 'student id', 'lanyard', 'badge', 'card'], ['id-card']],
+      [['key'], ['keys-1', 'keys-2']],
+      [['backpack', 'bagpack', 'bag'], ['backpack-1', 'backpack-2']],
+      [['hoodie', 'hooded', 'jacket', 'sweater', 'sweatshirt', 'shirt'], ['hoodie-1', 'hoodie-2']],
+      [['bottle', 'flask', 'tumbler'], ['bottle']],
+      [['glasses', 'spectacles'], ['glasses']],
+      [['book', 'notebook', 'diary'], ['books']],
+    ];
+    const STOCK_BY_CATEGORY = { Electronics: ['laptop'], Bags: ['backpack-1', 'backpack-2'], Clothing: ['hoodie-1', 'hoodie-2'],
+      Accessories: ['wallet'], Documents: ['id-card'], Keys: ['keys-1', 'keys-2'], Books: ['books'] };
+    const STOCK_CONTAIN = ['hoodie-1', 'hoodie-2', 'watch', 'earbuds'];
+    const stockFor = (item) => {
+      if (!item || item.photo) return { hasStock: false, showEmpty: false };
+      const title = String(item.title || '').toLowerCase();
+      const hit = STOCK_BY_WORD.find(([words]) => words.some((w) => title.includes(w)));
+      const options = hit ? hit[1] : STOCK_BY_CATEGORY[item.category];
+      if (!options) return { hasStock: false, showEmpty: true };
+      const seed = String(item.id || item.title || '').split('').reduce((n, ch) => n + ch.charCodeAt(0), 0);
+      const name = options[seed % options.length];
+      return { hasStock: true, showEmpty: false, stockPhoto: '/stock/' + name + '.jpg',
+        stockFit: STOCK_CONTAIN.includes(name) ? 'stock-photo--contain' : '' };
+    };
+
     const render = app.renderVals.bind(app);
     app.renderVals = function () {
       const vals = render();
@@ -876,8 +909,9 @@ const OVERRIDES = String.raw`
       vals.profileNoUploadedPhoto = !vals.profilePhoto;
       vals.profileHasIllustration = vals.profileHasPhoto && !vals.profilePhoto;
       vals.profileShowInitials = vals.profileNoPhoto && !vals.profilePhoto;
-      vals.filteredItems = vals.filteredItems.map((item) => ({ ...item, noPhoto: !item.photo }));
+      vals.filteredItems = vals.filteredItems.map((item) => ({ ...item, noPhoto: !item.photo, ...stockFor(item) }));
       vals.currentItem.noPhoto = !vals.currentItem.photo;
+      Object.assign(vals.currentItem, stockFor(vals.currentItem));
       vals.canCompleteHandover = Data.role === 'admin';
       return vals;
     };

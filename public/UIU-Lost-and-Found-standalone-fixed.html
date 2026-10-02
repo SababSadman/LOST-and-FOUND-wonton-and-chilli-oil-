@@ -3487,6 +3487,12 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 <style>
     .posted-photo{display:block;width:100%;height:100%;object-fit:cover;}
     .detail-photo{width:100%;height:340px;border-radius:18px;object-fit:contain;background:rgba(8,32,47,.06);}
+    .stock-photo{filter:saturate(.88);}
+    .detail-photo.stock-photo{object-fit:cover;}
+    .stock-photo.stock-photo--contain{object-fit:contain;background:#fff;}
+    .stock-frame{position:relative;}
+    .stock-tag{position:absolute;left:10px;bottom:10px;z-index:2;padding:3px 8px;border-radius:999px;background:rgba(8,32,47,.72);color:#fff;font-size:10px;font-weight:600;letter-spacing:.04em;pointer-events:none;}
+    .stock-frame .stock-tag{left:14px;bottom:14px;font-size:11px;}
     .report-photo{width:90px;height:90px;object-fit:cover;border-radius:12px;flex-shrink:0;}
     .photo-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--ink-soft);background:rgba(8,32,47,.06);font-size:13px;}
     .image-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
@@ -4624,7 +4630,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
             <sc-for list="{{ filteredItems }}" as="item" hint-placeholder-count="6">
               <article class="card">
                 <div class="card__media">
-                  <sc-if value="{{ item.photo }}"><img class="posted-photo" src="{{ item.photo }}" alt="{{ item.title }}" loading="lazy" /></sc-if><sc-if value="{{ item.noPhoto }}"><span class="photo-empty">No photo added</span></sc-if>
+                  <sc-if value="{{ item.photo }}"><img class="posted-photo" src="{{ item.photo }}" alt="{{ item.title }}" loading="lazy" /></sc-if><sc-if value="{{ item.hasStock }}"><img class="posted-photo stock-photo {{ item.stockFit }}" src="{{ item.stockPhoto }}" alt="Reference photo for {{ item.title }}" loading="lazy" /><span class="stock-tag">Reference photo</span></sc-if><sc-if value="{{ item.showEmpty }}"><span class="photo-empty">No photo added</span></sc-if>
                   <span class="card__code">#{{ item.code }}</span>
                   <span class="card__status" data-dc-style="background:{{ item.statusBg }};color:{{ item.statusColor }};border:1.5px solid {{ item.statusColor }};">
                     <sc-if value="{{ item.isResolved }}" hint-placeholder-val="{{ false }}"><span class="icon icon-tick icon--xs"></span></sc-if>
@@ -4670,7 +4676,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
           <button class="backlink" onClick="{{ onGoBrowse }}">&larr; Back to the counter</button>
           <div class="detail">
             <div style="min-width:0;">
-              <sc-if value="{{ currentItem.photo }}"><img class="posted-photo detail-photo" src="{{ currentItem.photo }}" alt="{{ currentItem.title }}" /></sc-if><sc-if value="{{ currentItem.noPhoto }}"><div class="photo-empty detail-photo">No photo added</div></sc-if>
+              <sc-if value="{{ currentItem.photo }}"><img class="posted-photo detail-photo" src="{{ currentItem.photo }}" alt="{{ currentItem.title }}" /></sc-if><sc-if value="{{ currentItem.hasStock }}"><div class="stock-frame"><img class="posted-photo detail-photo stock-photo {{ currentItem.stockFit }}" src="{{ currentItem.stockPhoto }}" alt="Reference photo for {{ currentItem.title }}" /><span class="stock-tag">Reference photo &middot; not the actual item</span></div></sc-if><sc-if value="{{ currentItem.showEmpty }}"><div class="photo-empty detail-photo">No photo added</div></sc-if>
               <sc-if value="{{ canChangeItemImage }}"><button type="button" class="btn btn--ghost btn--sm" style="margin-top:12px;" onClick="{{ onChangeItemImage }}">Add / change image</button></sc-if>
               <div style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:20px;">
                 <span class="code code--ink">#{{ currentItem.code }}</span>
